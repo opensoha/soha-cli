@@ -1,0 +1,17 @@
+.DS_Store
+
+# Build outputs
+/soha
+/bin/
+/dist/
+*.test
+*.out
+
+# Local configuration
+.env
+.env.*
+
+# Editor files
+.idea/
+.vscode/
+*.swp

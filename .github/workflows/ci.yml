@@ -1,0 +1,45 @@
+name: cli-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout cli
+        uses: actions/checkout@v4
+        with:
+          path: soha-cli
+      - name: Checkout contracts
+        uses: actions/checkout@v4
+        with:
+          repository: opensoha/soha-contracts
+          path: soha-contracts
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+          cache-dependency-path: soha-cli/go.sum
+      - name: Prepare Go workspace
+        working-directory: soha-cli
+        run: |
+          cat > go.work <<'EOF'
+          go 1.23.0
+
+          use (
+            .
+            ../soha-contracts
+          )
+
+          replace github.com/opensoha/soha-contracts v0.0.0 => ../soha-contracts
+          EOF
+      - name: Test
+        working-directory: soha-cli
+        run: go test ./...
+      - name: Build
+        working-directory: soha-cli
+        run: CGO_ENABLED=0 go build -o /tmp/soha ./cmd/soha
