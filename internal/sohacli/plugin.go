@@ -39,7 +39,7 @@ func runPlugin(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runPluginSearch(ctx context.Context, args []string, rt Runtime) error {
-	fs := newFlagSet("plugin search", rt.Err)
+	fs := newRuntimeFlagSet("plugin search", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	queryFlag := fs.String("query", "", "search query")
 	typeFlag := fs.String("type", "", "plugin type")
@@ -48,7 +48,7 @@ func runPluginSearch(ctx context.Context, args []string, rt Runtime) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func runPluginSearch(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runPluginShow(ctx context.Context, args []string, rt Runtime) error {
-	fs := newFlagSet("plugin show", rt.Err)
+	fs := newRuntimeFlagSet("plugin show", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	installed := fs.Bool("installed", false, "show installed plugin record instead of marketplace detail")
 	manifestOnly := fs.Bool("manifest", false, "show installed manifest snapshot")
@@ -82,7 +82,7 @@ func runPluginShow(ctx context.Context, args []string, rt Runtime) error {
 	if pluginID == "" {
 		return fmt.Errorf("plugin show requires a plugin id")
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func runPluginShow(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runPluginInstall(ctx context.Context, args []string, rt Runtime) error {
-	fs := newFlagSet("plugin install", rt.Err)
+	fs := newRuntimeFlagSet("plugin install", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	manifestPath := fs.String("manifest", "", "plugin manifest JSON file")
 	source := fs.String("source", "", "plugin source URL, path, or marketplace id")
@@ -132,7 +132,7 @@ func runPluginInstall(ctx context.Context, args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -148,13 +148,13 @@ func runPluginInstall(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runPluginList(ctx context.Context, args []string, rt Runtime) error {
-	fs := newFlagSet("plugin list", rt.Err)
+	fs := newRuntimeFlagSet("plugin list", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	jsonOutput := fs.Bool("json", false, "print JSON output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func runPluginDisable(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runPluginAction(ctx context.Context, args []string, rt Runtime, action string) error {
-	fs := newFlagSet("plugin "+action, rt.Err)
+	fs := newRuntimeFlagSet("plugin "+action, args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	jsonOutput := fs.Bool("json", false, "print JSON output")
 	if err := fs.Parse(args); err != nil {
@@ -190,7 +190,7 @@ func runPluginAction(ctx context.Context, args []string, rt Runtime, action stri
 	if pluginID == "" {
 		return fmt.Errorf("plugin %s requires a plugin id", action)
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -213,7 +213,7 @@ func runPluginAction(ctx context.Context, args []string, rt Runtime, action stri
 }
 
 func runPluginUpgrade(ctx context.Context, args []string, rt Runtime) error {
-	fs := newFlagSet("plugin upgrade", rt.Err)
+	fs := newRuntimeFlagSet("plugin upgrade", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	manifestPath := fs.String("manifest", "", "plugin manifest JSON file")
 	source := fs.String("source", "", "plugin source URL, path, or marketplace id")
@@ -230,7 +230,7 @@ func runPluginUpgrade(ctx context.Context, args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -246,7 +246,7 @@ func runPluginUpgrade(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runPluginConfig(ctx context.Context, args []string, rt Runtime) error {
-	fs := newFlagSet("plugin config", rt.Err)
+	fs := newRuntimeFlagSet("plugin config", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	enabled := fs.Bool("enable", false, "enable plugin in the same request")
 	metadataJSON := fs.String("metadata-json", "", "metadata JSON object")
@@ -279,7 +279,7 @@ func runPluginConfig(ctx context.Context, args []string, rt Runtime) error {
 		SecretRefs: parseKeyValueFlags(secretRefFlags),
 		Metadata:   metadata,
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -295,7 +295,7 @@ func runPluginConfig(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runPluginRemove(ctx context.Context, args []string, rt Runtime) error {
-	fs := newFlagSet("plugin remove", rt.Err)
+	fs := newRuntimeFlagSet("plugin remove", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -304,7 +304,7 @@ func runPluginRemove(ctx context.Context, args []string, rt Runtime) error {
 	if pluginID == "" {
 		return fmt.Errorf("plugin remove requires a plugin id")
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}

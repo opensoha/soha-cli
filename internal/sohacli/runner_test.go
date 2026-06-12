@@ -102,6 +102,657 @@ func TestRunLoginStoresProfileAndRedactsShow(t *testing.T) {
 	}
 }
 
+func TestRunLoginReadsPasswordFromStdin(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/login" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var req map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode login request: %v", err)
+		}
+		if req["password"] != "secret-from-stdin" {
+			t.Fatalf("unexpected password payload %#v", req)
+		}
+		writeJSON(t, w, map[string]any{
+			"data": map[string]any{
+				"user": map[string]any{
+					"userId":   "u-1",
+					"userName": "Ada",
+				},
+				"tokens": map[string]any{
+					"accessToken": "access-token-value-12345",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{
+		"login",
+		"--server", server.URL,
+		"--login", "ada",
+	}, Runtime{
+		In:         strings.NewReader("secret-from-stdin\n"),
+		Out:        &out,
+		Err:        &errOut,
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("login returned %d, stderr %q", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "Password: ") {
+		t.Fatalf("password prompt missing from stderr: %q", errOut.String())
+	}
+	if strings.Contains(out.String()+errOut.String(), "secret-from-stdin") {
+		t.Fatalf("login output leaked password: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+func TestHTTPTimeoutDefaultsAndOverrides(t *testing.T) {
+	if got := (APIClient{}).httpClient().Timeout; got != defaultHTTPTimeout {
+		t.Fatalf("default timeout = %s, want %s", got, defaultHTTPTimeout)
+	}
+	custom := &http.Client{Timeout: 2 * time.Second}
+	if got := (APIClient{Client: custom}).httpClient(); got != custom {
+		t.Fatalf("custom non-zero timeout client should be reused")
+	}
+	overridden := (APIClient{Client: &http.Client{}, Timeout: 5 * time.Second}).httpClient()
+	if got := overridden.Timeout; got != 5*time.Second {
+		t.Fatalf("override timeout = %s, want 5s", got)
+	}
+}
+
+func TestResolveRuntimeTimeoutFromFlagAndEnv(t *testing.T) {
+	t.Setenv("SOHA_HTTP_TIMEOUT", "250ms")
+	args, timeout, err := resolveRuntimeTimeout([]string{"capabilities"}, 0)
+	if err != nil {
+		t.Fatalf("resolve env timeout: %v", err)
+	}
+	if timeout != 250*time.Millisecond || strings.Join(args, " ") != "capabilities" {
+		t.Fatalf("unexpected env timeout result: args=%#v timeout=%s", args, timeout)
+	}
+
+	args, timeout, err = resolveRuntimeTimeout([]string{"capabilities", "--timeout", "1"}, 0)
+	if err != nil {
+		t.Fatalf("resolve trailing timeout flag: %v", err)
+	}
+	if timeout != time.Second || strings.Join(args, " ") != "capabilities" {
+		t.Fatalf("unexpected trailing timeout result: args=%#v timeout=%s", args, timeout)
+	}
+
+	args, timeout, err = resolveRuntimeTimeout([]string{"--timeout=2s", "capabilities"}, 0)
+	if err != nil {
+		t.Fatalf("resolve leading timeout flag: %v", err)
+	}
+	if timeout != 2*time.Second || strings.Join(args, " ") != "capabilities" {
+		t.Fatalf("unexpected leading timeout result: args=%#v timeout=%s", args, timeout)
+	}
+
+	if _, _, err := resolveRuntimeTimeout([]string{"capabilities", "--timeout", "0"}, 0); err == nil {
+		t.Fatalf("expected zero timeout to fail")
+	}
+}
+
+func TestExpiredProfileRefreshesAndPersists(t *testing.T) {
+	var refreshCalls int
+	var capabilitiesCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshCalls++
+			if r.Header.Get("Authorization") != "" {
+				t.Fatalf("refresh should not send an Authorization header, got %q", r.Header.Get("Authorization"))
+			}
+			var req map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode refresh request: %v", err)
+			}
+			if req["refreshToken"] != "refresh-old" {
+				t.Fatalf("unexpected refresh token payload %#v", req)
+			}
+			writeJSON(t, w, map[string]any{"data": map[string]any{
+				"user": map[string]any{
+					"userId":   "u-2",
+					"userName": "Grace",
+				},
+				"tokens": map[string]any{
+					"accessToken":  "access-new",
+					"refreshToken": "refresh-new",
+					"expiresIn":    3600,
+					"tokenType":    "Bearer",
+				},
+			}})
+		case "/api/v1/ai-gateway/capabilities":
+			capabilitiesCalls++
+			if r.Header.Get("Authorization") != "Bearer access-new" {
+				t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+			}
+			writeJSON(t, w, map[string]any{"data": map[string]any{
+				"name":           "soha AI Gateway",
+				"permissionKeys": []string{},
+				"tools":          []map[string]any{},
+				"resources":      []map[string]any{},
+				"prompts":        []map[string]any{},
+				"skills":         []map[string]any{},
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:    server.URL,
+		AccessToken:  "access-old",
+		RefreshToken: "refresh-old",
+		ExpiresAt:    time.Now().Add(-time.Hour),
+		UserID:       "u-1",
+		UserName:     "Ada",
+		AIClientID:   "profile-client",
+		AIClientName: "Codex",
+		SkillID:      "profile-skill",
+		Source:       "profile-source",
+	})
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"capabilities", "--profile", "dev"}, Runtime{
+		Out:        &out,
+		Err:        &errOut,
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("capabilities returned %d, stderr %q", code, errOut.String())
+	}
+	if refreshCalls != 1 || capabilitiesCalls != 1 {
+		t.Fatalf("unexpected calls: refresh=%d capabilities=%d", refreshCalls, capabilitiesCalls)
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	profile := cfg.Profiles["dev"]
+	if profile.AccessToken != "access-new" || profile.RefreshToken != "refresh-new" {
+		t.Fatalf("profile tokens were not refreshed: %#v", profile)
+	}
+	if !profile.ExpiresAt.After(time.Now().Add(30 * time.Minute)) {
+		t.Fatalf("profile expiry was not updated from expiresIn: %s", profile.ExpiresAt)
+	}
+	if profile.UserID != "u-2" || profile.UserName != "Grace" {
+		t.Fatalf("profile user was not updated: %#v", profile)
+	}
+	if profile.AIClientID != "profile-client" || profile.Source != "profile-source" {
+		t.Fatalf("profile context was not preserved: %#v", profile)
+	}
+}
+
+func TestExpiredProfileWithoutRefreshTokenFailsBeforeRequest(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		t.Fatalf("server should not be called for an expired profile without refresh token")
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:   server.URL,
+		AccessToken: "access-old",
+		ExpiresAt:   time.Now().Add(-time.Minute),
+		UserID:      "u-1",
+		UserName:    "Ada",
+	})
+
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"capabilities", "--profile", "dev"}, Runtime{
+		Out:        &bytes.Buffer{},
+		Err:        &errOut,
+		ConfigPath: configPath,
+	})
+	if code == 0 {
+		t.Fatalf("expected capabilities to fail")
+	}
+	if calls != 0 {
+		t.Fatalf("server was called %d times", calls)
+	}
+	for _, want := range []string{"access token expired", "run soha login again"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Fatalf("stderr missing %q: %q", want, errOut.String())
+		}
+	}
+}
+
+func TestRunContextCommandsDoNotRefreshExpiredProfile(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		t.Fatalf("context commands should not call the server, got %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:    server.URL,
+		AccessToken:  "access-old",
+		RefreshToken: "refresh-old",
+		ExpiresAt:    time.Now().Add(-time.Minute),
+		UserID:       "u-1",
+		UserName:     "Ada",
+	})
+
+	var showOut bytes.Buffer
+	var showErr bytes.Buffer
+	code := Run(context.Background(), []string{"context", "show", "--profile", "dev"}, Runtime{
+		Out:        &showOut,
+		Err:        &showErr,
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("context show returned %d, stderr %q", code, showErr.String())
+	}
+	for _, want := range []string{`"profile": "dev"`, `"source": "soha"`, server.URL} {
+		if !strings.Contains(showOut.String(), want) {
+			t.Fatalf("context show output missing %q: %q", want, showOut.String())
+		}
+	}
+
+	var setOut bytes.Buffer
+	var setErr bytes.Buffer
+	code = Run(context.Background(), []string{"context", "set", "--profile", "dev", "--ai-client-id", "local-client"}, Runtime{
+		Out:        &setOut,
+		Err:        &setErr,
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("context set returned %d, stderr %q", code, setErr.String())
+	}
+	if calls != 0 {
+		t.Fatalf("server was called %d times", calls)
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	profile := cfg.Profiles["dev"]
+	if profile.AccessToken != "access-old" || profile.RefreshToken != "refresh-old" {
+		t.Fatalf("context set should not refresh tokens: %#v", profile)
+	}
+	if profile.AIClientID != "local-client" || profile.Source != "soha" {
+		t.Fatalf("context set did not persist local context defaults: %#v", profile)
+	}
+}
+
+func TestSOHATokenOverrideIgnoresStoredExpiry(t *testing.T) {
+	t.Setenv("SOHA_TOKEN", "override-token")
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/api/v1/ai-gateway/capabilities" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer override-token" {
+			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+		}
+		writeJSON(t, w, map[string]any{"data": map[string]any{
+			"name":           "soha AI Gateway",
+			"permissionKeys": []string{},
+			"tools":          []map[string]any{},
+			"resources":      []map[string]any{},
+			"prompts":        []map[string]any{},
+			"skills":         []map[string]any{},
+		}})
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:   server.URL,
+		AccessToken: "access-old",
+		ExpiresAt:   time.Now().Add(-time.Minute),
+		UserID:      "u-1",
+		UserName:    "Ada",
+	})
+
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"capabilities", "--profile", "dev"}, Runtime{
+		Out:        &bytes.Buffer{},
+		Err:        &errOut,
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("capabilities returned %d, stderr %q", code, errOut.String())
+	}
+	if calls != 1 {
+		t.Fatalf("server calls = %d, want 1", calls)
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Profiles["dev"].AccessToken != "access-old" {
+		t.Fatalf("SOHA_TOKEN override should not be persisted: %#v", cfg.Profiles["dev"])
+	}
+}
+
+func TestRunPlatformCapabilitiesUsesClusterCapabilityMatrix(t *testing.T) {
+	var platformCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/clusters/capabilities" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		platformCalls++
+		if r.Header.Get("Authorization") != "Bearer access-token" {
+			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+		}
+		writeJSON(t, w, map[string]any{"items": []map[string]any{
+			{
+				"key":              "resource.yaml.apply",
+				"label":            "YAML apply and delete",
+				"category":         "configuration",
+				"requiredScopes":   []string{"cluster", "namespace"},
+				"riskLevel":        "mutate",
+				"requiresApproval": true,
+				"docsUrl":          "/operations/agent-runtime",
+				"direct":           map[string]any{"status": "available"},
+				"agent":            map[string]any{"status": "unsupported", "reason": "YAML apply and delete are not supported for agent-connected clusters yet"},
+			},
+		}})
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:   server.URL,
+		AccessToken: "access-token",
+		UserID:      "u-1",
+		UserName:    "Ada",
+	})
+
+	var out bytes.Buffer
+	code := Run(context.Background(), []string{"capabilities", "--profile", "dev", "--domain", "platform", "--output", "names"}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("platform capabilities returned %d", code)
+	}
+	if platformCalls != 1 {
+		t.Fatalf("platform capabilities calls = %d, want 1", platformCalls)
+	}
+	text := out.String()
+	for _, want := range []string{"profile: dev", "capability\tresource.yaml.apply", "mutate", "approval", "scopes=cluster,namespace", "agent=unsupported:YAML apply"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("platform capabilities output missing %q in %q", want, text)
+		}
+	}
+}
+
+func TestRunDiagnoseIncludesClusterCapabilityMatrix(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/ai-gateway/capabilities":
+			writeJSON(t, w, map[string]any{"data": map[string]any{
+				"name":           "soha AI Gateway",
+				"permissionKeys": []string{"ai.gateway.invoke"},
+				"tools":          []map[string]any{},
+				"resources":      []map[string]any{},
+				"prompts":        []map[string]any{},
+				"skills":         []map[string]any{},
+			}})
+		case "/api/v1/clusters/capabilities":
+			writeJSON(t, w, map[string]any{"items": []map[string]any{
+				{
+					"key":              "pod.exec",
+					"label":            "Pod exec and terminal",
+					"category":         "workloads",
+					"requiredScopes":   []string{"cluster", "namespace", "pod"},
+					"riskLevel":        "execute",
+					"requiresApproval": true,
+					"docsUrl":          "/operations/agent-runtime",
+					"direct":           map[string]any{"status": "available"},
+					"agent":            map[string]any{"status": "partial", "reason": "non-interactive exec is available through the agent; interactive terminal sessions remain direct-only"},
+				},
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:   server.URL,
+		AccessToken: "access-token",
+		UserID:      "u-1",
+		UserName:    "Ada",
+	})
+
+	var out bytes.Buffer
+	code := Run(context.Background(), []string{"diagnose", "--profile", "dev", "--cluster-capability", "pod.exec"}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("diagnose returned %d", code)
+	}
+	text := out.String()
+	for _, want := range []string{"clusterCapability: pod.exec", "riskLevel: execute", "requiresApproval: true", "requiredScopes: cluster,namespace,pod", "agentStatus: partial", "interactive terminal sessions remain direct-only"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("diagnose output missing %q in %q", want, text)
+		}
+	}
+}
+
+func TestRunCloudFleetDiagnosticsConsumesCapabilityMatrix(t *testing.T) {
+	var diagnosticsCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cloud/tenants/tenant-1/agent-fleets/fleet-1/diagnostics" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		diagnosticsCalls++
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer access-token" {
+			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+		}
+		writeJSON(t, w, map[string]any{"diagnostics": cloudFleetDiagnosticsFixture()})
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:   server.URL,
+		AccessToken: "access-token",
+		UserID:      "u-1",
+		UserName:    "Ada",
+	})
+
+	var out bytes.Buffer
+	code := Run(context.Background(), []string{"cloud", "fleet", "diagnostics", "--profile", "dev", "--tenant-id", "tenant-1", "--fleet-id", "fleet-1"}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("cloud fleet diagnostics returned %d", code)
+	}
+	for _, want := range []string{
+		"profile: dev",
+		"tenant: tenant-1",
+		"fleet: fleet-1",
+		"status: degraded",
+		"clusters: total=2 available=1 degraded=1 unknown=0",
+		"capabilities: available=11 partial=1 unsupported=1",
+		"gap\thelm.releases\tmissing=cluster-2",
+		"cluster\tcluster-2\tdegraded",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("cloud diagnostics output missing %q in %q", want, out.String())
+		}
+	}
+
+	var jsonOut bytes.Buffer
+	code = Run(context.Background(), []string{"cloud", "fleet", "diagnostics", "--profile", "dev", "--tenant-id", "tenant-1", "--fleet-id", "fleet-1", "--output", "json"}, Runtime{
+		Out:        &jsonOut,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("cloud fleet diagnostics json returned %d", code)
+	}
+	var decoded CloudFleetCapabilityDiagnostics
+	if err := json.Unmarshal(jsonOut.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode cloud diagnostics JSON: %v\n%s", err, jsonOut.String())
+	}
+	if decoded.FleetID != "fleet-1" || decoded.Status != "degraded" || len(decoded.CapabilityGaps) != 3 {
+		t.Fatalf("unexpected cloud diagnostics JSON: %#v", decoded)
+	}
+	if diagnosticsCalls != 2 {
+		t.Fatalf("diagnostics calls = %d, want 2", diagnosticsCalls)
+	}
+}
+
+func TestRunVersionOutputsBuildInfo(t *testing.T) {
+	oldVersion, oldCommit, oldDate := version, commit, date
+	version, commit, date = "1.2.3", "abc1234", "2026-06-09T00:00:00Z"
+	defer func() {
+		version, commit, date = oldVersion, oldCommit, oldDate
+	}()
+
+	var out bytes.Buffer
+	code := Run(context.Background(), []string{"version", "--json"}, Runtime{Out: &out, Err: &bytes.Buffer{}})
+	if code != 0 {
+		t.Fatalf("version returned %d", code)
+	}
+	var got VersionInfo
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode version JSON: %v\n%s", err, out.String())
+	}
+	if got.Version != "1.2.3" || got.Commit != "abc1234" || got.Date != "2026-06-09T00:00:00Z" || got.GoOS == "" || got.GoArch == "" {
+		t.Fatalf("unexpected version info: %#v", got)
+	}
+}
+
+func TestRunHelpUsesStdoutAndExitZero(t *testing.T) {
+	tests := [][]string{
+		{"--help"},
+		{"capabilities", "--help"},
+		{"plugin", "--help"},
+		{"plugin", "search", "--help"},
+		{"version", "--help"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var out bytes.Buffer
+			var errOut bytes.Buffer
+			code := Run(context.Background(), args, Runtime{Out: &out, Err: &errOut})
+			if code != 0 {
+				t.Fatalf("%v returned %d", args, code)
+			}
+			if out.Len() == 0 {
+				t.Fatalf("%v wrote no help output", args)
+			}
+			if errOut.Len() != 0 {
+				t.Fatalf("%v wrote help to stderr: %q", args, errOut.String())
+			}
+		})
+	}
+}
+
+func TestAPIClientHTTPErrorPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{
+			name:   "401 wrapped error",
+			status: http.StatusUnauthorized,
+			body:   `{"error":{"code":"unauthorized","message":"login required"}}`,
+			want:   "unauthorized: login required",
+		},
+		{
+			name:   "403 top-level message",
+			status: http.StatusForbidden,
+			body:   `{"code":"forbidden","message":"permission denied"}`,
+			want:   "forbidden: permission denied",
+		},
+		{
+			name:   "429 plain text",
+			status: http.StatusTooManyRequests,
+			body:   "slow down",
+			want:   "slow down",
+		},
+		{
+			name:   "5xx empty body",
+			status: http.StatusInternalServerError,
+			body:   "",
+			want:   "500 Internal Server Error",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			_, err := (APIClient{ServerURL: server.URL, Token: "token"}).Capabilities(context.Background(), nil)
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestAPIClientDecodeTimeoutAndEmptyResponseErrors(t *testing.T) {
+	t.Run("bad JSON", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":`))
+		}))
+		defer server.Close()
+
+		_, err := (APIClient{ServerURL: server.URL}).Capabilities(context.Background(), nil)
+		if err == nil || !strings.Contains(err.Error(), "decode response") {
+			t.Fatalf("expected decode response error, got %v", err)
+		}
+	})
+
+	t.Run("empty response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		_, err := (APIClient{ServerURL: server.URL}).Capabilities(context.Background(), nil)
+		if err == nil || !strings.Contains(err.Error(), "returned empty response") {
+			t.Fatalf("expected empty response error, got %v", err)
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(200 * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"name":"late"}}`))
+		}))
+		defer server.Close()
+
+		_, err := (APIClient{ServerURL: server.URL, Timeout: 20 * time.Millisecond}).Capabilities(context.Background(), nil)
+		if err == nil || !strings.Contains(err.Error(), "request failed") {
+			t.Fatalf("expected timeout request failure, got %v", err)
+		}
+	})
+}
+
 func TestRunCapabilitiesNamesSendsGatewayHeaders(t *testing.T) {
 	ctx := context.Background()
 	var sawCapabilities bool
@@ -204,6 +855,21 @@ func TestRunCapabilitiesJSONFlag(t *testing.T) {
 	}
 	if len(manifest.Tools) != 1 || manifest.Tools[0].Name != "k8s.pods.list" {
 		t.Fatalf("unexpected manifest: %#v", manifest)
+	}
+
+	var yamlOut bytes.Buffer
+	code = Run(context.Background(), []string{"capabilities", "--profile", "dev", "--output", "yaml"}, Runtime{
+		Out:        &yamlOut,
+		Err:        &bytes.Buffer{},
+		ConfigPath: writeTestConfig(t, server.URL),
+	})
+	if code != 0 {
+		t.Fatalf("capabilities --output yaml returned %d", code)
+	}
+	for _, want := range []string{"name:", "tools:", "name: k8s.pods.list", "permissionKeys:"} {
+		if !strings.Contains(yamlOut.String(), want) {
+			t.Fatalf("capabilities YAML output missing %q in %s", want, yamlOut.String())
+		}
 	}
 }
 
@@ -482,12 +1148,35 @@ func TestRunTokenAndServiceAccountCommands(t *testing.T) {
 			t.Fatalf("%v returned %d", args, code)
 		}
 	}
-	if paths["GET /api/v1/ai-gateway/personal-access-tokens"] != 1 ||
+
+	yamlCommands := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"token", "list", "--profile", "dev", "--output", "yaml"}, "id: pat-1"},
+		{[]string{"service-account", "list", "--profile", "dev", "--output", "yaml"}, "id: sa-1"},
+		{[]string{"service-account", "token-list", "--profile", "dev", "--output", "yaml"}, "serviceAccountId: sa-2"},
+	}
+	for _, tc := range yamlCommands {
+		var out bytes.Buffer
+		code := Run(context.Background(), tc.args, Runtime{Out: &out, Err: &bytes.Buffer{}, ConfigPath: configPath})
+		if code != 0 {
+			t.Fatalf("%v returned %d", tc.args, code)
+		}
+		if !strings.Contains(out.String(), tc.want) {
+			t.Fatalf("%v YAML output missing %q in %s", tc.args, tc.want, out.String())
+		}
+		if strings.Contains(out.String(), "plain_once") || strings.Contains(out.String(), "secret") {
+			t.Fatalf("%v YAML output leaked sensitive value: %s", tc.args, out.String())
+		}
+	}
+
+	if paths["GET /api/v1/ai-gateway/personal-access-tokens"] != 2 ||
 		paths["POST /api/v1/ai-gateway/personal-access-tokens"] != 1 ||
 		paths["POST /api/v1/ai-gateway/personal-access-tokens/pat-1/revoke"] != 1 ||
-		paths["GET /api/v1/ai-gateway/service-accounts"] != 1 ||
+		paths["GET /api/v1/ai-gateway/service-accounts"] != 2 ||
 		paths["POST /api/v1/ai-gateway/service-accounts"] != 1 ||
-		paths["GET /api/v1/ai-gateway/service-account-tokens"] != 1 ||
+		paths["GET /api/v1/ai-gateway/service-account-tokens"] != 2 ||
 		paths["POST /api/v1/ai-gateway/service-accounts/sa-2/tokens"] != 1 ||
 		paths["POST /api/v1/ai-gateway/service-account-tokens/sat-1/revoke"] != 1 {
 		t.Fatalf("unexpected calls: %#v", paths)
@@ -579,6 +1268,147 @@ func TestRunPluginCommands(t *testing.T) {
 	}
 }
 
+func TestRunPluginQueryOutputFormats(t *testing.T) {
+	paths := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer profile-token" {
+			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+		}
+		paths[r.Method+" "+r.URL.Path]++
+		switch r.URL.Path {
+		case "/api/v1/plugins/marketplace":
+			writeJSON(t, w, map[string]any{"items": []map[string]any{sensitiveMarketplacePluginFixture()}})
+		case "/api/v1/plugins/marketplace/opensoha.k8s-sre-pack":
+			writeJSON(t, w, map[string]any{"data": sensitiveMarketplacePluginFixture()})
+		case "/api/v1/plugins/installed":
+			writeJSON(t, w, map[string]any{"items": []map[string]any{sensitiveInstalledPluginFixture("enabled")}})
+		case "/api/v1/plugins/opensoha.k8s-sre-pack":
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected method for plugin show installed: %s", r.Method)
+			}
+			writeJSON(t, w, map[string]any{"data": sensitiveInstalledPluginFixture("enabled")})
+		case "/api/v1/plugins/opensoha.k8s-sre-pack/manifest":
+			writeJSON(t, w, map[string]any{"data": sensitivePluginManifestFixture()})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfig(t, server.URL)
+	cases := []struct {
+		name     string
+		args     []string
+		want     []string
+		wantJSON bool
+	}{
+		{
+			name: "search table",
+			args: []string{"plugin", "search", "--profile", "dev", "--query", "k8s", "--output", "table"},
+			want: []string{"opensoha.k8s-sre-pack\tskill-pack\topensoha\t0.1.0\tinstalled=true\tK8s SRE Pack"},
+		},
+		{
+			name:     "search json",
+			args:     []string{"plugin", "search", "--profile", "dev", "--query", "k8s", "--output", "json"},
+			want:     []string{`"id": "opensoha.k8s-sre-pack"`, `"metadata":`},
+			wantJSON: true,
+		},
+		{
+			name: "search yaml",
+			args: []string{"plugin", "search", "--profile", "dev", "--query", "k8s", "--output", "yaml"},
+			want: []string{"id: opensoha.k8s-sre-pack", `secrets: "[REDACTED]"`},
+		},
+		{
+			name:     "search legacy json flag",
+			args:     []string{"plugin", "search", "--profile", "dev", "--query", "k8s", "--json"},
+			want:     []string{`"id": "opensoha.k8s-sre-pack"`},
+			wantJSON: true,
+		},
+		{
+			name: "list table",
+			args: []string{"plugin", "list", "--profile", "dev", "--output", "table"},
+			want: []string{"opensoha.k8s-sre-pack\tenabled\tskill-pack\t0.1.0\tK8s SRE Pack"},
+		},
+		{
+			name:     "list json",
+			args:     []string{"plugin", "list", "--profile", "dev", "--output", "json"},
+			want:     []string{`"configuredSecretRefs": "[REDACTED]"`, `"status": "enabled"`},
+			wantJSON: true,
+		},
+		{
+			name: "list yaml",
+			args: []string{"plugin", "list", "--profile", "dev", "--output", "yaml"},
+			want: []string{`configuredSecretRefs: "[REDACTED]"`, "status: enabled"},
+		},
+		{
+			name: "show table",
+			args: []string{"plugin", "show", "--profile", "dev", "--output", "table", "opensoha.k8s-sre-pack"},
+			want: []string{"source: marketplace:opensoha/k8s-sre-pack token=[REDACTED]", "summary: summary password=[REDACTED]"},
+		},
+		{
+			name:     "show json",
+			args:     []string{"plugin", "show", "--profile", "dev", "--output", "json", "opensoha.k8s-sre-pack"},
+			want:     []string{`"summary": "summary password=[REDACTED]"`, `"source": "marketplace:opensoha/k8s-sre-pack token=[REDACTED]"`},
+			wantJSON: true,
+		},
+		{
+			name: "show yaml",
+			args: []string{"plugin", "show", "--profile", "dev", "--output", "yaml", "opensoha.k8s-sre-pack"},
+			want: []string{`summary: "summary password=[REDACTED]"`, `source: "marketplace:opensoha/k8s-sre-pack token=[REDACTED]"`},
+		},
+		{
+			name: "show installed yaml",
+			args: []string{"plugin", "show", "--profile", "dev", "--installed", "--output", "yaml", "opensoha.k8s-sre-pack"},
+			want: []string{`configuredSecretRefs: "[REDACTED]"`, "status: enabled"},
+		},
+		{
+			name:     "show manifest default json",
+			args:     []string{"plugin", "show", "--profile", "dev", "--manifest", "opensoha.k8s-sre-pack"},
+			want:     []string{`"id": "opensoha.k8s-sre-pack"`, `"secrets": "[REDACTED]"`},
+			wantJSON: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			code := Run(context.Background(), tc.args, Runtime{Out: &out, Err: &bytes.Buffer{}, ConfigPath: configPath})
+			if code != 0 {
+				t.Fatalf("%v returned %d with output %q", tc.args, code, out.String())
+			}
+			text := out.String()
+			for _, want := range tc.want {
+				if !strings.Contains(text, want) {
+					t.Fatalf("%v output missing %q in %s", tc.args, want, text)
+				}
+			}
+			if tc.wantJSON && !json.Valid([]byte(text)) {
+				t.Fatalf("%v output is not valid JSON: %s", tc.args, text)
+			}
+			assertNoPluginSensitiveValues(t, text)
+		})
+	}
+
+	var invalidErr bytes.Buffer
+	code := Run(context.Background(), []string{"plugin", "list", "--output", "xml"}, Runtime{
+		Out:        &bytes.Buffer{},
+		Err:        &invalidErr,
+		ConfigPath: configPath,
+	})
+	if code == 0 {
+		t.Fatalf("plugin list accepted invalid output format")
+	}
+	if !strings.Contains(invalidErr.String(), `unsupported output format "xml"`) {
+		t.Fatalf("plugin list invalid output error mismatch: %q", invalidErr.String())
+	}
+	if paths["GET /api/v1/plugins/marketplace"] != 4 ||
+		paths["GET /api/v1/plugins/installed"] != 3 ||
+		paths["GET /api/v1/plugins/marketplace/opensoha.k8s-sre-pack"] != 3 ||
+		paths["GET /api/v1/plugins/opensoha.k8s-sre-pack"] != 1 ||
+		paths["GET /api/v1/plugins/opensoha.k8s-sre-pack/manifest"] != 1 {
+		t.Fatalf("unexpected plugin query calls: %#v", paths)
+	}
+}
+
 func pluginManifestFixture() map[string]any {
 	return map[string]any{
 		"id":        "opensoha.k8s-sre-pack",
@@ -611,6 +1441,67 @@ func installedPluginFixture(status string) map[string]any {
 		"installedAt":          "2026-06-08T00:00:00Z",
 		"updatedAt":            "2026-06-08T00:00:00Z",
 		"metadata":             map[string]any{"permissionModel": "requested-only"},
+	}
+}
+
+func sensitiveMarketplacePluginFixture() map[string]any {
+	return map[string]any{
+		"id":        "opensoha.k8s-sre-pack",
+		"name":      "K8s SRE Pack",
+		"version":   "0.1.0",
+		"publisher": "opensoha",
+		"type":      "skill-pack",
+		"summary":   "summary password=plain-password-value",
+		"source":    "marketplace:opensoha/k8s-sre-pack token=plain-token-value",
+		"riskLevel": "read",
+		"installed": true,
+		"manifest":  sensitivePluginManifestFixture(),
+	}
+}
+
+func sensitiveInstalledPluginFixture(status string) map[string]any {
+	item := installedPluginFixture(status)
+	item["source"] = "marketplace:opensoha/k8s-sre-pack token=plain-token-value"
+	item["manifest"] = sensitivePluginManifestFixture()
+	item["configuredSecretRefs"] = map[string]string{"apiToken": "secret://prod/plugin-token"}
+	item["metadata"] = map[string]any{
+		"permissionModel": "requested-only",
+		"password":        "plain-password-value",
+		"note":            "secret=plain-secret-value",
+	}
+	return item
+}
+
+func sensitivePluginManifestFixture() map[string]any {
+	item := pluginManifestFixture()
+	item["description"] = "manifest password=plain-password-value"
+	item["homepage"] = "https://plugins.example/opensoha.k8s-sre-pack?token=plain-token-value"
+	item["secrets"] = map[string]any{
+		"required": []map[string]any{{
+			"name":        "api-token",
+			"description": "service password=plain-password-value",
+			"required":    true,
+			"secretRef":   "secret://prod/plugin-token",
+		}},
+	}
+	item["metadata"] = map[string]any{
+		"password": "plain-password-value",
+		"note":     "authorization=plain-token-value",
+	}
+	return item
+}
+
+func assertNoPluginSensitiveValues(t *testing.T, text string) {
+	t.Helper()
+	for _, raw := range []string{
+		"plain-token-value",
+		"plain-password-value",
+		"plain-secret-value",
+		"secret://prod/plugin-token",
+	} {
+		if strings.Contains(text, raw) {
+			t.Fatalf("plugin output leaked sensitive value %q in %s", raw, text)
+		}
 	}
 }
 
@@ -731,6 +1622,32 @@ func TestRunAuditListAndDiagnoseHints(t *testing.T) {
 	}
 	if strings.Contains(auditOut.String(), "secret") {
 		t.Fatalf("audit output leaked sensitive text: %s", auditOut.String())
+	}
+
+	var auditYAMLOut bytes.Buffer
+	code = Run(context.Background(), []string{"audit", "list", "--profile", "dev", "--tool-name", "k8s.pods.logs", "--limit", "10", "--output", "yaml"}, Runtime{
+		Out:        &auditYAMLOut,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("audit list --output yaml returned %d", code)
+	}
+	if !strings.Contains(auditYAMLOut.String(), "id: audit-1") || !strings.Contains(auditYAMLOut.String(), "toolName: k8s.pods.logs") || strings.Contains(auditYAMLOut.String(), "secret") {
+		t.Fatalf("unexpected audit YAML output: %s", auditYAMLOut.String())
+	}
+
+	var invalidAuditErr bytes.Buffer
+	code = Run(context.Background(), []string{"audit", "list", "--output", "xml"}, Runtime{
+		Out:        &bytes.Buffer{},
+		Err:        &invalidAuditErr,
+		ConfigPath: configPath,
+	})
+	if code == 0 {
+		t.Fatalf("audit list accepted invalid output format")
+	}
+	if !strings.Contains(invalidAuditErr.String(), `unsupported output format "xml"`) {
+		t.Fatalf("audit list invalid output error mismatch: %q", invalidAuditErr.String())
 	}
 
 	var diagOut bytes.Buffer
@@ -868,6 +1785,39 @@ func TestRunGovernanceStatus(t *testing.T) {
 		t.Fatalf("governance JSON output leaked sensitive value: %s", jsonText)
 	}
 
+	var yamlOut bytes.Buffer
+	code = Run(context.Background(), []string{"governance", "status", "--profile", "dev", "--window-hours", "48", "--output", "yaml"}, Runtime{
+		Out:        &yamlOut,
+		Err:        &bytes.Buffer{},
+		ConfigPath: writeTestConfig(t, server.URL),
+	})
+	if code != 0 {
+		t.Fatalf("governance status --output yaml returned %d", code)
+	}
+	yamlText := yamlOut.String()
+	for _, want := range []string{"health:", "status: degraded", "riskCounts:", "mutate: 1", "pendingApprovalClientIds:", "- codex-local", "recommendationActions:", "policyTemplate: approval_guardrail"} {
+		if !strings.Contains(yamlText, want) {
+			t.Fatalf("governance YAML output missing %q in %s", want, yamlText)
+		}
+	}
+	if strings.Contains(yamlText, "token=secret") {
+		t.Fatalf("governance YAML output leaked sensitive value: %s", yamlText)
+	}
+
+	var invalidFormatOut bytes.Buffer
+	var invalidFormatErr bytes.Buffer
+	code = Run(context.Background(), []string{"governance", "status", "--profile", "dev", "--window-hours", "48", "--output", "xml"}, Runtime{
+		Out:        &invalidFormatOut,
+		Err:        &invalidFormatErr,
+		ConfigPath: writeTestConfig(t, server.URL),
+	})
+	if code == 0 {
+		t.Fatalf("governance status accepted invalid output format")
+	}
+	if !strings.Contains(invalidFormatErr.String(), `unsupported output format "xml"`) {
+		t.Fatalf("governance status invalid output error mismatch: %q", invalidFormatErr.String())
+	}
+
 	var invalidOut bytes.Buffer
 	var invalidErr bytes.Buffer
 	code = Run(context.Background(), []string{"governance", "status", "--profile", "dev", "--window-hours", "169"}, Runtime{
@@ -959,6 +1909,19 @@ func TestRunApprovalListAndApprove(t *testing.T) {
 	}
 	if !strings.Contains(listOut.String(), "approval-1") || strings.Contains(listOut.String(), "secret") {
 		t.Fatalf("unexpected approval list output: %s", listOut.String())
+	}
+
+	var listYAMLOut bytes.Buffer
+	code = Run(context.Background(), []string{"approval", "list", "--profile", "dev", "--status", "pending", "--tool-name", "delivery.actions.trigger", "--limit", "5", "--output", "yaml"}, Runtime{
+		Out:        &listYAMLOut,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("approval list --output yaml returned %d", code)
+	}
+	if !strings.Contains(listYAMLOut.String(), "id: approval-1") || !strings.Contains(listYAMLOut.String(), "toolName: delivery.actions.trigger") || strings.Contains(listYAMLOut.String(), "secret") {
+		t.Fatalf("unexpected approval list YAML output: %s", listYAMLOut.String())
 	}
 
 	var approveOut bytes.Buffer
@@ -1056,6 +2019,19 @@ func TestRunApprovalTimelineAndAuditFilter(t *testing.T) {
 		t.Fatalf("unexpected approval timeline output: %s", timelineOut.String())
 	}
 
+	var timelineYAMLOut bytes.Buffer
+	code = Run(context.Background(), []string{"approval", "timeline", "approval-1", "--profile", "dev", "--output", "yaml"}, Runtime{
+		Out:        &timelineYAMLOut,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("approval timeline --output yaml returned %d", code)
+	}
+	if !strings.Contains(timelineYAMLOut.String(), "workflowRunId: workflow-1") || strings.Contains(timelineYAMLOut.String(), "secret") {
+		t.Fatalf("unexpected approval timeline YAML output: %s", timelineYAMLOut.String())
+	}
+
 	var auditOut bytes.Buffer
 	code = Run(context.Background(), []string{"audit", "list", "--profile", "dev", "--approval-request-id", "approval-1"}, Runtime{
 		Out:        &auditOut,
@@ -1068,6 +2044,19 @@ func TestRunApprovalTimelineAndAuditFilter(t *testing.T) {
 	if !strings.Contains(auditOut.String(), "audit-1") {
 		t.Fatalf("unexpected audit list output: %s", auditOut.String())
 	}
+
+	var auditYAMLOut bytes.Buffer
+	code = Run(context.Background(), []string{"audit", "list", "--profile", "dev", "--approval-request-id", "approval-1", "--output", "yaml"}, Runtime{
+		Out:        &auditYAMLOut,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("audit list --output yaml returned %d", code)
+	}
+	if !strings.Contains(auditYAMLOut.String(), "id: audit-1") {
+		t.Fatalf("unexpected audit YAML output: %s", auditYAMLOut.String())
+	}
 }
 
 func TestRunCompletionPrintsScript(t *testing.T) {
@@ -1079,8 +2068,51 @@ func TestRunCompletionPrintsScript(t *testing.T) {
 	if !strings.Contains(out.String(), "complete -F _soha_completion soha") {
 		t.Fatalf("unexpected completion output: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "approval") {
-		t.Fatalf("completion output missing approval command: %s", out.String())
+	for _, want := range []string{
+		"version",
+		"approval",
+		"add",
+		`add)`,
+		"plugin",
+		`plugin)`,
+		"search show install list enable disable upgrade config remove rm",
+		"docs",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("completion output missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestRunDocsGeneratesMarkdown(t *testing.T) {
+	var out bytes.Buffer
+	code := Run(context.Background(), []string{"docs"}, Runtime{Out: &out, Err: &bytes.Buffer{}})
+	if code != 0 {
+		t.Fatalf("docs returned %d", code)
+	}
+	for _, want := range []string{
+		"# Soha CLI Command Reference",
+		"Generated with `soha docs --format markdown`.",
+		"| `tool call` | `soha tool call <name> [options]` |",
+		"| `docs` | `soha docs [--format markdown]` |",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("docs output missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestCommandDocsFileIsFresh(t *testing.T) {
+	var generated bytes.Buffer
+	writeCommandDocsMarkdown(&generated)
+
+	path := filepath.Join("..", "..", "docs", "commands.md")
+	committed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(committed) != generated.String() {
+		t.Fatalf("%s is stale; regenerate it with `go run ./cmd/soha docs --format markdown > docs/commands.md`", path)
 	}
 }
 
@@ -1453,22 +2485,317 @@ func TestRunSkillListAndInstall(t *testing.T) {
 	}
 }
 
+func TestRunAddCodexInstallsMCPAndSkills(t *testing.T) {
+	ctx := context.Background()
+	source := t.TempDir()
+	dest := t.TempDir()
+	runtimeDest := t.TempDir()
+	codexConfig := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(codexConfig, []byte("[mcp_servers]\n\n[mcp_servers.antd]\ncommand = \"antd\"\nargs = [\"mcp\"]\n"), 0o600); err != nil {
+		t.Fatalf("write codex config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(source), "index.json"), []byte(`{"skills":[]}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write skills index: %v", err)
+	}
+	writeSkill(t, source, "delivery-developer", "# Delivery Developer\n")
+	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
+
+	var out bytes.Buffer
+	code := Run(ctx, []string{
+		"add", "codex",
+		"--source", source,
+		"--dest", dest,
+		"--runtime-skill-dest", runtimeDest,
+		"--codex-config", codexConfig,
+		"--command", "/tmp/soha",
+		"--skills", "k8s-sre,delivery-developer",
+	}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: writeTestConfig(t, "https://soha.example"),
+	})
+	if code != 0 {
+		t.Fatalf("add codex returned %d, output %q", code, out.String())
+	}
+	raw, err := os.ReadFile(codexConfig)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		`[mcp_servers.antd]`,
+		`[mcp_servers.soha]`,
+		`type = "stdio"`,
+		`command = "/tmp/soha"`,
+		`args = ["mcp", "start", "--profile", "dev", "--ai-client-id", "profile-client", "--ai-client", "Codex", "--skill-id", "profile-skill"]`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("codex config missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Count(text, "[mcp_servers.soha]") != 1 {
+		t.Fatalf("expected one soha MCP section, got config:\n%s", text)
+	}
+	wrapper, err := os.ReadFile(filepath.Join(dest, "soha", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read codex skill wrapper: %v", err)
+	}
+	for _, want := range []string{"name: soha", "Bash(soha capabilities*)", "`k8s-sre.md`", "`delivery-developer.md`"} {
+		if !strings.Contains(string(wrapper), want) {
+			t.Fatalf("wrapper missing %q in:\n%s", want, string(wrapper))
+		}
+	}
+	reference, err := os.ReadFile(filepath.Join(dest, "soha", "references", "skills", "k8s-sre.md"))
+	if err != nil {
+		t.Fatalf("read copied reference skill: %v", err)
+	}
+	if string(reference) != "# K8s SRE\n" {
+		t.Fatalf("unexpected reference content %q", string(reference))
+	}
+	runtimeSkill, err := os.ReadFile(filepath.Join(runtimeDest, "k8s-sre", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read runtime skill: %v", err)
+	}
+	if string(runtimeSkill) != "# K8s SRE\n" {
+		t.Fatalf("unexpected runtime skill content %q", string(runtimeSkill))
+	}
+}
+
+func TestRunAddCodexUpsertsExistingMCPSection(t *testing.T) {
+	ctx := context.Background()
+	source := t.TempDir()
+	dest := t.TempDir()
+	codexConfig := filepath.Join(t.TempDir(), "config.toml")
+	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
+	initial := "[mcp_servers]\n\n[mcp_servers.soha]\ncommand = \"old\"\nargs = [\"old\"]\n\n[mcp_servers.node_repl]\ncommand = \"node\"\n"
+	if err := os.WriteFile(codexConfig, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write codex config: %v", err)
+	}
+
+	var out bytes.Buffer
+	code := Run(ctx, []string{
+		"add", "codex",
+		"--profile", "local",
+		"--source", source,
+		"--dest", dest,
+		"--runtime-skill-dest", t.TempDir(),
+		"--codex-config", codexConfig,
+		"--command", "/opt/bin/soha",
+		"--skill-id", "k8s-sre",
+		"--skills", "k8s-sre",
+	}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: writeTestConfig(t, "https://soha.example"),
+	})
+	if code != 0 {
+		t.Fatalf("add codex returned %d, output %q", code, out.String())
+	}
+	raw, err := os.ReadFile(codexConfig)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	text := string(raw)
+	if strings.Count(text, "[mcp_servers.soha]") != 1 {
+		t.Fatalf("expected one soha MCP section, got config:\n%s", text)
+	}
+	if strings.Contains(text, `command = "old"`) || strings.Contains(text, `args = ["old"]`) {
+		t.Fatalf("old MCP section was not replaced:\n%s", text)
+	}
+	for _, want := range []string{
+		`[mcp_servers.node_repl]`,
+		`command = "/opt/bin/soha"`,
+		`args = ["mcp", "start", "--profile", "local", "--ai-client-id", "codex-local", "--ai-client", "Codex", "--skill-id", "k8s-sre"]`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config missing %q in:\n%s", want, text)
+		}
+	}
+}
+
+func TestRunAddCodexConfiguresProfileServer(t *testing.T) {
+	ctx := context.Background()
+	source := t.TempDir()
+	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	codexConfig := filepath.Join(t.TempDir(), "config.toml")
+
+	var out bytes.Buffer
+	code := Run(ctx, []string{
+		"add", "codex",
+		"--source", source,
+		"--dest", t.TempDir(),
+		"--no-runtime-skills",
+		"--codex-config", codexConfig,
+		"--command", "/tmp/soha",
+		"--skills", "k8s-sre",
+	}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("add codex returned %d, output %q", code, out.String())
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	profile := cfg.Profiles["default"]
+	if profile.ServerURL != defaultServerURL {
+		t.Fatalf("default server URL = %q, want %q", profile.ServerURL, defaultServerURL)
+	}
+	if profile.AIClientID != "codex-local" || profile.AIClientName != "Codex" || profile.Source != "codex" {
+		t.Fatalf("unexpected generated profile context: %#v", profile)
+	}
+
+	out.Reset()
+	code = Run(ctx, []string{
+		"add", "codex",
+		"--profile", "cloud",
+		"--server", "api.example.com",
+		"--source", source,
+		"--dest", t.TempDir(),
+		"--no-runtime-skills",
+		"--codex-config", codexConfig,
+		"--command", "/tmp/soha",
+		"--skills", "k8s-sre",
+	}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("add codex with server override returned %d, output %q", code, out.String())
+	}
+	cfg, err = loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config after override: %v", err)
+	}
+	if got := cfg.Profiles["cloud"].ServerURL; got != "https://api.example.com" {
+		t.Fatalf("server override = %q, want https://api.example.com", got)
+	}
+}
+
+func TestRunAddInteractiveSelectsTargets(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	source := t.TempDir()
+	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
+	configPath := filepath.Join(t.TempDir(), "config.json")
+
+	var out bytes.Buffer
+	code := Run(ctx, []string{
+		"add",
+		"--source", source,
+		"--command", "/tmp/soha",
+		"--skills", "k8s-sre",
+		"--no-runtime-skills",
+	}, Runtime{
+		In:         strings.NewReader("1,3\n"),
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("interactive add returned %d, output %q", code, out.String())
+	}
+	if !strings.Contains(out.String(), "Select AI agents or IDEs") {
+		t.Fatalf("interactive prompt missing from output: %q", out.String())
+	}
+	codexConfig, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	if !strings.Contains(string(codexConfig), `[mcp_servers.soha]`) {
+		t.Fatalf("codex config missing soha MCP section:\n%s", string(codexConfig))
+	}
+	cursorConfig, err := os.ReadFile(filepath.Join(home, ".cursor", "mcp.json"))
+	if err != nil {
+		t.Fatalf("read cursor config: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(cursorConfig, &decoded); err != nil {
+		t.Fatalf("decode cursor config: %v\n%s", err, string(cursorConfig))
+	}
+	servers := decoded["mcpServers"].(map[string]any)
+	if _, ok := servers["soha"]; !ok {
+		t.Fatalf("cursor config missing soha MCP entry: %#v", decoded)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "soha", "SKILL.md")); err != nil {
+		t.Fatalf("codex skill package missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cursor", "skills-cursor", "soha", "SKILL.md")); err != nil {
+		t.Fatalf("cursor skill package missing: %v", err)
+	}
+}
+
+func TestRunAddKiroUpdatesJSONCConfig(t *testing.T) {
+	ctx := context.Background()
+	source := t.TempDir()
+	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
+	configPath := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(configPath, []byte("{\n  \"mcpServers\": {\n    // existing comment\n    \"old\": {\"command\": \"old\", \"args\": []}\n  }\n}\n"), 0o600); err != nil {
+		t.Fatalf("write JSONC config: %v", err)
+	}
+
+	var out bytes.Buffer
+	code := Run(ctx, []string{
+		"add", "kiro",
+		"--config", configPath,
+		"--source", source,
+		"--dest", t.TempDir(),
+		"--command", "/tmp/soha",
+		"--skills", "k8s-sre",
+		"--no-runtime-skills",
+	}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: filepath.Join(t.TempDir(), "config.json"),
+	})
+	if code != 0 {
+		t.Fatalf("add kiro returned %d, output %q", code, out.String())
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Kiro config: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode rewritten Kiro config: %v\n%s", err, string(raw))
+	}
+	servers := decoded["mcpServers"].(map[string]any)
+	if _, ok := servers["old"]; !ok {
+		t.Fatalf("existing MCP entry was not preserved: %#v", decoded)
+	}
+	soha := servers["soha"].(map[string]any)
+	if soha["command"] != "/tmp/soha" || soha["disabled"] != false {
+		t.Fatalf("unexpected soha Kiro entry: %#v", soha)
+	}
+}
+
 func writeTestConfig(t *testing.T, serverURL string) string {
+	t.Helper()
+	return writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:    serverURL,
+		AccessToken:  "profile-token",
+		UserID:       "u-1",
+		UserName:     "Ada",
+		AIClientID:   "profile-client",
+		AIClientName: "Codex",
+		SkillID:      "profile-skill",
+		Source:       "profile-source",
+	})
+}
+
+func writeTestConfigWithProfile(t *testing.T, profile ProfileConfig) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := saveConfig(path, Config{
 		CurrentProfile: "dev",
 		Profiles: map[string]ProfileConfig{
-			"dev": {
-				ServerURL:    serverURL,
-				AccessToken:  "profile-token",
-				UserID:       "u-1",
-				UserName:     "Ada",
-				AIClientID:   "profile-client",
-				AIClientName: "Codex",
-				SkillID:      "profile-skill",
-				Source:       "profile-source",
-			},
+			"dev": profile,
 		},
 	}); err != nil {
 		t.Fatalf("save config: %v", err)
@@ -1484,6 +2811,94 @@ func writeSkill(t *testing.T, root, name, content string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write skill: %v", err)
+	}
+}
+
+func cloudFleetDiagnosticsFixture() map[string]any {
+	return map[string]any{
+		"tenantId": "tenant-1",
+		"fleetId":  "fleet-1",
+		"mode":     "agent",
+		"status":   "degraded",
+		"clusterStatusCounts": map[string]any{
+			"total":     2,
+			"available": 1,
+			"degraded":  1,
+			"unknown":   0,
+		},
+		"capabilityStatusCounts": map[string]any{
+			"available":   11,
+			"partial":     1,
+			"unsupported": 1,
+		},
+		"capabilityGaps": []map[string]any{
+			{
+				"key":                   "helm.releases",
+				"missingClusterIds":     []string{"cluster-2"},
+				"partialClusterIds":     []string{},
+				"unsupportedClusterIds": []string{},
+				"reasons":               []map[string]any{},
+			},
+			{
+				"key":                   "pod.exec",
+				"missingClusterIds":     []string{},
+				"partialClusterIds":     []string{"cluster-2"},
+				"unsupportedClusterIds": []string{},
+				"reasons": []map[string]any{
+					{
+						"clusterId": "cluster-2",
+						"status":    "partial",
+						"reason":    "interactive terminal requires agent 0.2.0",
+					},
+				},
+			},
+			{
+				"key":                   "port.forward",
+				"missingClusterIds":     []string{},
+				"partialClusterIds":     []string{},
+				"unsupportedClusterIds": []string{"cluster-2"},
+				"reasons":               []map[string]any{},
+			},
+		},
+		"clusters": []map[string]any{
+			{
+				"clusterId":   "cluster-1",
+				"clusterName": "acme-primary",
+				"displayName": "Acme Primary",
+				"status":      "available",
+				"counts": map[string]any{
+					"available":   7,
+					"partial":     0,
+					"unsupported": 0,
+				},
+				"degradedCapabilities": []map[string]any{},
+				"missingCapabilities":  []string{},
+			},
+			{
+				"clusterId":   "cluster-2",
+				"clusterName": "acme-edge",
+				"displayName": "Acme Edge",
+				"status":      "degraded",
+				"counts": map[string]any{
+					"available":   4,
+					"partial":     1,
+					"unsupported": 1,
+				},
+				"degradedCapabilities": []map[string]any{
+					{
+						"key":    "pod.exec",
+						"status": "partial",
+						"reason": "interactive terminal requires agent 0.2.0",
+					},
+					{
+						"key":    "port.forward",
+						"status": "unsupported",
+					},
+				},
+				"missingCapabilities": []string{"helm.releases"},
+			},
+		},
+		"message": "One or more assigned clusters have partial, unsupported, missing, or unknown managed-agent capabilities.",
 	}
 }
 

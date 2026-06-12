@@ -41,7 +41,7 @@ func runMCP(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runMCPStart(ctx context.Context, args []string, rt Runtime) error {
-	fs := newFlagSet("mcp start", rt.Err)
+	fs := newRuntimeFlagSet("mcp start", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	aiClientID := fs.String("ai-client-id", "", "override AI client id")
 	aiClientName := fs.String("ai-client", "", "override AI client display name")
@@ -49,7 +49,7 @@ func runMCPStart(ctx context.Context, args []string, rt Runtime) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -65,7 +65,7 @@ func runMCPStart(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runMCPInstall(args []string, rt Runtime) error {
-	fs := newFlagSet("mcp install", rt.Err)
+	fs := newRuntimeFlagSet("mcp install", args, rt)
 	profile := fs.String("profile", "", "profile name")
 	command := fs.String("command", "soha", "soha executable path")
 	aiClientID := fs.String("ai-client-id", "", "AI client id to include in generated args")
@@ -149,7 +149,7 @@ func (s mcpServer) handle(ctx context.Context, msg rpcMessage) rpcMessage {
 				"resources": map[string]any{},
 				"prompts":   map[string]any{},
 			},
-			"serverInfo":   map[string]any{"name": "soha", "version": "0.1.0"},
+			"serverInfo":   map[string]any{"name": "soha", "version": BuildInfo().Version},
 			"instructions": mcpInstructions(),
 		}
 	case "tools/list":

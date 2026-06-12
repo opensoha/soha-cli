@@ -1,9 +1,9 @@
 package sohacli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,16 +11,18 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type Runtime struct {
-	In         io.Reader
-	Out        io.Writer
-	Err        io.Writer
-	ConfigPath string
-	HTTPClient *http.Client
+	In          io.Reader
+	Out         io.Writer
+	Err         io.Writer
+	ConfigPath  string
+	HTTPClient  *http.Client
+	HTTPTimeout time.Duration
 }
 
 func Run(ctx context.Context, args []string, rt Runtime) int {
@@ -36,13 +38,23 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 	if rt.ConfigPath == "" {
 		rt.ConfigPath = defaultConfigPath()
 	}
+	var err error
+	args, rt.HTTPTimeout, err = resolveRuntimeTimeout(args, rt.HTTPTimeout)
+	if err != nil {
+		fmt.Fprintln(rt.Err, "error:", err)
+		return 1
+	}
 	if len(args) == 0 {
 		printUsage(rt.Err)
 		return 2
 	}
+	if len(args) > 1 && isHelpArg(args[1]) && printCommandHelp(args[0], rt.Out) {
+		return 0
+	}
 	cmd := args[0]
-	var err error
 	switch cmd {
+	case "version":
+		err = runVersion(args[1:], rt)
 	case "login":
 		err = runLogin(ctx, args[1:], rt)
 	case "capabilities":
@@ -63,20 +75,26 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 		err = runApproval(ctx, args[1:], rt)
 	case "governance":
 		err = runGovernance(ctx, args[1:], rt)
+	case "cloud":
+		err = runCloud(ctx, args[1:], rt)
 	case "profile":
 		err = runProfile(args[1:], rt)
 	case "context":
-		err = runContext(args[1:], rt)
+		err = runContext(ctx, args[1:], rt)
 	case "mcp":
 		err = runMCP(ctx, args[1:], rt)
 	case "skill":
 		err = runSkill(args[1:], rt)
+	case "add":
+		err = runAdd(args[1:], rt)
 	case "plugin":
-		err = runPlugin(ctx, args[1:], rt)
+		err = runPluginWithOutput(ctx, args[1:], rt)
 	case "diagnose":
 		err = runDiagnose(ctx, args[1:], rt)
 	case "completion":
 		err = runCompletion(args[1:], rt)
+	case "docs":
+		err = runDocs(args[1:], rt)
 	case "help", "-h", "--help":
 		printUsage(rt.Out)
 		return 0
@@ -84,6 +102,9 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 		err = fmt.Errorf("unknown command %q", cmd)
 	}
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		fmt.Fprintln(rt.Err, "error:", err)
 		return 1
 	}
@@ -93,9 +114,13 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "Usage: soha <command> [options]")
 	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Global options:")
+	fmt.Fprintln(out, "  --timeout <duration>  HTTP request timeout, e.g. 10s or 1m (default 30s)")
+	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Commands:")
+	fmt.Fprintln(out, "  version        Print build version information")
 	fmt.Fprintln(out, "  login          Authenticate and store a local profile")
-	fmt.Fprintln(out, "  capabilities   Print the current AI Gateway manifest")
+	fmt.Fprintln(out, "  capabilities   Print AI Gateway or platform capability metadata")
 	fmt.Fprintln(out, "  tool call      Invoke an AI Gateway tool with JSON input")
 	fmt.Fprintln(out, "  resource read  Read an AI Gateway MCP resource")
 	fmt.Fprintln(out, "  prompt get     Get an AI Gateway MCP prompt")
@@ -104,21 +129,105 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  audit list     Query AI Gateway audit logs")
 	fmt.Fprintln(out, "  approval       List, trace, or decide AI Gateway approval requests")
 	fmt.Fprintln(out, "  governance status Show AI Gateway governance health and metrics")
+	fmt.Fprintln(out, "  cloud fleet diagnostics Show Cloud managed agent fleet capability diagnostics")
 	fmt.Fprintln(out, "  profile        List, show, or switch profiles")
 	fmt.Fprintln(out, "  context        Show or update AI client context headers")
 	fmt.Fprintln(out, "  mcp start      Run the soha MCP stdio server")
 	fmt.Fprintln(out, "  mcp install    Print MCP client configuration")
 	fmt.Fprintln(out, "  skill list     List local soha AI Gateway skill files")
 	fmt.Fprintln(out, "  skill install  Install local soha AI Gateway skill files")
+	fmt.Fprintln(out, "  add            Add Soha MCP and skills to an AI agent or IDE")
 	fmt.Fprintln(out, "  plugin         Search, install, and manage Soha plugins")
 	fmt.Fprintln(out, "  diagnose       Check profile and Gateway connectivity")
 	fmt.Fprintln(out, "  completion     Print shell completion script")
+	fmt.Fprintln(out, "  docs           Generate CLI command reference documentation")
+}
+
+func printCommandHelp(command string, out io.Writer) bool {
+	switch command {
+	case "version":
+		fmt.Fprintln(out, "Usage: soha version [--json]")
+	case "capabilities":
+		fmt.Fprintln(out, "Usage: soha capabilities [--domain gateway|platform] [--output json|yaml|names|inputs]")
+	case "tool":
+		fmt.Fprintln(out, "Usage: soha tool call <name> [options]")
+	case "resource":
+		fmt.Fprintln(out, "Usage: soha resource read <uri> [options]")
+	case "prompt":
+		fmt.Fprintln(out, "Usage: soha prompt get <name> [options]")
+	case "token":
+		fmt.Fprintln(out, "Usage: soha token <list|create|revoke> [options]")
+	case "service-account":
+		fmt.Fprintln(out, "Usage: soha service-account <list|create|token-list|token-create|token-revoke> [options]")
+	case "audit":
+		fmt.Fprintln(out, "Usage: soha audit list [options]")
+	case "approval":
+		fmt.Fprintln(out, "Usage: soha approval <list|timeline|approve|reject|cancel> [options]")
+	case "governance":
+		fmt.Fprintln(out, "Usage: soha governance status [options]")
+	case "cloud":
+		fmt.Fprintln(out, "Usage: soha cloud fleet diagnostics [options]")
+	case "profile":
+		fmt.Fprintln(out, "Usage: soha profile <list|show|use> [options]")
+	case "context":
+		fmt.Fprintln(out, "Usage: soha context <show|set> [options]")
+	case "mcp":
+		fmt.Fprintln(out, "Usage: soha mcp <start|install> [options]")
+	case "skill":
+		fmt.Fprintln(out, "Usage: soha skill <list|install> [options]")
+	case "add":
+		fmt.Fprintln(out, "Usage: soha add [codex|claude|cursor|kiro|gemini|antigravity|antigravity-ide|trae|all] [options]")
+	case "plugin":
+		fmt.Fprintln(out, "Usage: soha plugin <search|show|install|list|enable|disable|upgrade|config|remove> [options]")
+	case "diagnose":
+		fmt.Fprintln(out, "Usage: soha diagnose [options]")
+	case "completion":
+		fmt.Fprintln(out, "Usage: soha completion [bash|zsh]")
+	case "docs":
+		fmt.Fprintln(out, "Usage: soha docs [--format markdown]")
+	default:
+		return false
+	}
+	return true
+}
+
+func newRuntimeFlagSet(name string, args []string, rt Runtime) *flag.FlagSet {
+	return newFlagSet(name, flagOutput(args, rt))
+}
+
+func flagOutput(args []string, rt Runtime) io.Writer {
+	if hasHelpArg(args) {
+		return rt.Out
+	}
+	return rt.Err
+}
+
+func hasHelpArg(args []string) bool {
+	for _, arg := range args {
+		if isHelpArg(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHelpArg(arg string) bool {
+	arg = strings.TrimSpace(arg)
+	return arg == "-h" || arg == "--help"
+}
+
+func runVersion(args []string, rt Runtime) error {
+	fs := newRuntimeFlagSet("version", args, rt)
+	jsonOutput := fs.Bool("json", false, "print JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return writeVersion(rt.Out, *jsonOutput)
 }
 
 func runLogin(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("login", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	server := fs.String("server", env("SOHA_SERVER"), "soha server URL")
+	fs := newRuntimeFlagSet("login", args, rt)
+	server := fs.String("server", defaultServerFromEnv(), "soha server URL")
 	login := fs.String("login", env("SOHA_LOGIN"), "login name")
 	password := fs.String("password", env("SOHA_PASSWORD"), "login password")
 	profile := fs.String("profile", defaultProfile, "profile name")
@@ -128,7 +237,8 @@ func runLogin(ctx context.Context, args []string, rt Runtime) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(*server) == "" {
+	serverURL := normalizeServerURL(*server)
+	if serverURL == "" {
 		return fmt.Errorf("--server is required")
 	}
 	if strings.TrimSpace(*login) == "" {
@@ -136,16 +246,16 @@ func runLogin(ctx context.Context, args []string, rt Runtime) error {
 	}
 	if strings.TrimSpace(*password) == "" {
 		fmt.Fprint(rt.Err, "Password: ")
-		line, err := bufio.NewReader(rt.In).ReadString('\n')
-		if err != nil && err != io.EOF {
+		value, err := readPassword(rt)
+		if err != nil {
 			return err
 		}
-		*password = strings.TrimSpace(line)
+		*password = value
 	}
 	if strings.TrimSpace(*password) == "" {
 		return fmt.Errorf("password is required")
 	}
-	client := APIClient{ServerURL: *server, Client: rt.HTTPClient}
+	client := APIClient{ServerURL: serverURL, Client: rt.HTTPClient, Timeout: rt.HTTPTimeout}
 	result, err := client.Login(ctx, *login, *password)
 	if err != nil {
 		return err
@@ -159,17 +269,16 @@ func runLogin(ctx context.Context, args []string, rt Runtime) error {
 	}
 	name := profileName(*profile)
 	cfg.CurrentProfile = name
-	cfg.Profiles[name] = ProfileConfig{
-		ServerURL:    strings.TrimRight(strings.TrimSpace(*server), "/"),
-		AccessToken:  result.Data.Tokens.AccessToken,
-		RefreshToken: result.Data.Tokens.RefreshToken,
-		ExpiresAt:    result.Data.Tokens.ExpiresAt,
-		UserID:       result.Data.User.UserID,
-		UserName:     result.Data.User.UserName,
+	profileConfig, err := profileFromAuthResult(ProfileConfig{
+		ServerURL:    serverURL,
 		AIClientID:   strings.TrimSpace(*aiClientID),
 		AIClientName: strings.TrimSpace(*aiClientName),
 		Source:       strings.TrimSpace(*source),
+	}, result, time.Now())
+	if err != nil {
+		return err
 	}
+	cfg.Profiles[name] = profileConfig
 	if err := saveConfig(rt.ConfigPath, cfg); err != nil {
 		return err
 	}
@@ -178,10 +287,10 @@ func runLogin(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("capabilities", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
+	fs := newRuntimeFlagSet("capabilities", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
-	format := fs.String("output", "json", "output format: json, names, or inputs")
+	domain := fs.String("domain", "gateway", "capability domain: gateway or platform")
+	format := fs.String("output", "json", "output format: json, yaml, names, or inputs")
 	jsonOutput := fs.Bool("json", false, "print JSON output")
 	aiClientID := fs.String("ai-client-id", "", "override AI client id")
 	aiClientName := fs.String("ai-client", "", "override AI client display name")
@@ -190,20 +299,33 @@ func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_, name, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	manifest, err := gatewayClient(rt, profile).Capabilities(ctx, gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source))
+	domainValue, err := normalizeCapabilityDomain(*domain)
 	if err != nil {
 		return err
 	}
 	if *jsonOutput {
 		*format = "json"
 	}
-	switch strings.TrimSpace(*format) {
+	formatValue, err := normalizeOutputFormat(*format, "json", "yaml", "names", "inputs")
+	if err != nil {
+		return err
+	}
+	_, name, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
+	if err != nil {
+		return err
+	}
+	if domainValue == "platform" {
+		return runPlatformCapabilities(ctx, rt, name, profile, formatValue)
+	}
+	manifest, err := gatewayClient(rt, profile).Capabilities(ctx, gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source))
+	if err != nil {
+		return err
+	}
+	switch formatValue {
 	case "", "json":
 		return writePrettyJSON(rt.Out, manifest)
+	case "yaml":
+		return writeYAML(rt.Out, manifest)
 	case "names":
 		fmt.Fprintf(rt.Out, "profile: %s\n", name)
 		for _, tool := range manifest.Tools {
@@ -232,6 +354,41 @@ func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
 	}
 }
 
+func runPlatformCapabilities(ctx context.Context, rt Runtime, profileName string, profile ProfileConfig, formatValue string) error {
+	items, err := gatewayClient(rt, profile).ClusterCapabilities(ctx)
+	if err != nil {
+		return err
+	}
+	sortClusterCapabilities(items)
+	switch formatValue {
+	case "", "json":
+		return writePrettyJSON(rt.Out, items)
+	case "yaml":
+		return writeYAML(rt.Out, items)
+	case "names":
+		fmt.Fprintf(rt.Out, "profile: %s\n", profileName)
+		for _, item := range items {
+			fmt.Fprintf(rt.Out, "capability\t%s\t%s\t%s\tscopes=%s\tdirect=%s\tagent=%s",
+				item.Key,
+				item.RiskLevel,
+				approvalText(item.RequiresApproval),
+				strings.Join(item.RequiredScopes, ","),
+				clusterCapabilitySupportText(item.Direct),
+				clusterCapabilitySupportText(item.Agent),
+			)
+			if reason := strings.TrimSpace(item.Agent.Reason); reason != "" {
+				fmt.Fprintf(rt.Out, "\treason=%s", redactSensitiveText(reason))
+			}
+			fmt.Fprintln(rt.Out)
+		}
+		return nil
+	case "inputs":
+		return fmt.Errorf("platform capabilities do not expose input schemas; use --output names, json, or yaml")
+	default:
+		return fmt.Errorf("unsupported output format %q", formatValue)
+	}
+}
+
 func runTool(ctx context.Context, args []string, rt Runtime) error {
 	if len(args) == 0 {
 		return fmt.Errorf("tool requires a subcommand: call")
@@ -246,8 +403,7 @@ func runTool(ctx context.Context, args []string, rt Runtime) error {
 
 func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 	toolName, args := extractLeadingToolName(args)
-	fs := flag.NewFlagSet("tool call", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
+	fs := newRuntimeFlagSet("tool call", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	inputPath := fs.String("input", "", "JSON input file path, or - for stdin")
 	inputJSON := fs.String("input-json", "", "inline JSON tool input")
@@ -265,7 +421,7 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 	if *inputPath != "" && *inputJSON != "" {
 		return fmt.Errorf("use either --input or --input-json, not both")
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -294,8 +450,7 @@ func runResource(ctx context.Context, args []string, rt Runtime) error {
 
 func runResourceRead(ctx context.Context, args []string, rt Runtime) error {
 	uri, args := extractLeadingValue(args)
-	fs := flag.NewFlagSet("resource read", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
+	fs := newRuntimeFlagSet("resource read", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	contextPath := fs.String("context", "", "JSON context file path, or - for stdin")
 	contextJSON := fs.String("context-json", "", "inline JSON context")
@@ -313,7 +468,7 @@ func runResourceRead(ctx context.Context, args []string, rt Runtime) error {
 	if *contextPath != "" && *contextJSON != "" {
 		return fmt.Errorf("use either --context or --context-json, not both")
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -342,8 +497,7 @@ func runPrompt(ctx context.Context, args []string, rt Runtime) error {
 
 func runPromptGet(ctx context.Context, args []string, rt Runtime) error {
 	name, args := extractLeadingValue(args)
-	fs := flag.NewFlagSet("prompt get", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
+	fs := newRuntimeFlagSet("prompt get", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	argumentsPath := fs.String("arguments", "", "JSON arguments file path, or - for stdin")
 	argumentsJSON := fs.String("arguments-json", "", "inline JSON arguments")
@@ -369,7 +523,7 @@ func runPromptGet(ctx context.Context, args []string, rt Runtime) error {
 	if strings.TrimSpace(*argumentsPath) == "-" && strings.TrimSpace(*contextPath) == "-" {
 		return fmt.Errorf("only one of --arguments or --context can read from stdin")
 	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
@@ -388,830 +542,75 @@ func runPromptGet(ctx context.Context, args []string, rt Runtime) error {
 	return writePrettyJSON(rt.Out, sanitizeCLIValue(result))
 }
 
-func runToken(ctx context.Context, args []string, rt Runtime) error {
-	if len(args) == 0 {
-		return fmt.Errorf("token requires a subcommand: list, create, or revoke")
-	}
-	switch args[0] {
-	case "list":
-		return runTokenList(ctx, args[1:], rt)
-	case "create":
-		return runTokenCreate(ctx, args[1:], rt)
-	case "revoke":
-		return runTokenRevoke(ctx, args[1:], rt)
-	default:
-		return fmt.Errorf("unknown token command %q", args[0])
-	}
-}
-
-func runTokenList(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("token list", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
+func resolveRuntimeTimeout(args []string, runtimeTimeout time.Duration) ([]string, time.Duration, error) {
+	stripped, flagValue, err := extractTimeoutFlag(args)
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
-	items, err := gatewayClient(rt, profile).ListPersonalAccessTokens(ctx, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCLIValue(items))
-}
-
-func runTokenCreate(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("token create", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	name := fs.String("name", "", "token name")
-	scopes := fs.String("scopes", "", "comma-separated token scopes")
-	permissionKeys := fs.String("permission-keys", "", "comma-separated permission keys")
-	expiresAt := fs.String("expires-at", "", "RFC3339 expiration time")
-	metadata := fs.String("metadata-json", "", "metadata JSON object")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if strings.TrimSpace(*name) == "" {
-		return fmt.Errorf("--name is required")
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	payload := map[string]any{
-		"name":           strings.TrimSpace(*name),
-		"scopes":         splitCSV(*scopes),
-		"permissionKeys": splitCSV(*permissionKeys),
-	}
-	if *expiresAt != "" {
-		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*expiresAt))
+	if flagValue != "" {
+		timeout, err := parseHTTPTimeout("--timeout", flagValue)
 		if err != nil {
-			return fmt.Errorf("invalid --expires-at; use RFC3339")
+			return nil, 0, err
 		}
-		payload["expiresAt"] = parsed.Format(time.RFC3339)
+		return stripped, timeout, nil
 	}
-	if *metadata != "" {
-		parsed, err := parseJSONObject([]byte(*metadata))
+	if runtimeTimeout > 0 {
+		return stripped, runtimeTimeout, nil
+	}
+	if value := env("SOHA_HTTP_TIMEOUT"); value != "" {
+		timeout, err := parseHTTPTimeout("SOHA_HTTP_TIMEOUT", value)
 		if err != nil {
-			return fmt.Errorf("invalid --metadata-json: %w", err)
+			return nil, 0, err
 		}
-		payload["metadata"] = parsed
+		return stripped, timeout, nil
 	}
-	created, err := gatewayClient(rt, profile).CreatePersonalAccessToken(ctx, payload, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCreatedToken(created))
+	return stripped, 0, nil
 }
 
-func runTokenRevoke(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("token revoke", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	tokenID := fs.String("id", "", "token id")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	id := firstNonEmptyString(*tokenID, fs.Arg(0))
-	if id == "" {
-		return fmt.Errorf("token revoke requires a token id")
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	if err := gatewayClient(rt, profile).RevokePersonalAccessToken(ctx, id, gatewayHeaders(profile, "", "", "", "")); err != nil {
-		return err
-	}
-	fmt.Fprintf(rt.Out, "Revoked token %s\n", id)
-	return nil
-}
-
-func runServiceAccount(ctx context.Context, args []string, rt Runtime) error {
-	if len(args) == 0 {
-		return fmt.Errorf("service-account requires a subcommand: list, create, token-list, token-create, or token-revoke")
-	}
-	switch args[0] {
-	case "list":
-		return runServiceAccountList(ctx, args[1:], rt)
-	case "create":
-		return runServiceAccountCreate(ctx, args[1:], rt)
-	case "token-list":
-		return runServiceAccountTokenList(ctx, args[1:], rt)
-	case "token-create":
-		return runServiceAccountTokenCreate(ctx, args[1:], rt)
-	case "token-revoke":
-		return runServiceAccountTokenRevoke(ctx, args[1:], rt)
-	default:
-		return fmt.Errorf("unknown service-account command %q", args[0])
-	}
-}
-
-func runServiceAccountList(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("service-account list", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	items, err := gatewayClient(rt, profile).ListServiceAccounts(ctx, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCLIValue(items))
-}
-
-func runServiceAccountTokenList(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("service-account token-list", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	items, err := gatewayClient(rt, profile).ListServiceAccountTokens(ctx, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCLIValue(items))
-}
-
-func runServiceAccountCreate(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("service-account create", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	id := fs.String("id", "", "service account id")
-	name := fs.String("name", "", "service account name")
-	description := fs.String("description", "", "service account description")
-	status := fs.String("status", "active", "service account status")
-	roleIDs := fs.String("role-ids", "", "comma-separated role ids")
-	teamIDs := fs.String("team-ids", "", "comma-separated team ids")
-	scopeGrantIDs := fs.String("scope-grant-ids", "", "comma-separated scope grant ids")
-	metadata := fs.String("metadata-json", "", "metadata JSON object")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if strings.TrimSpace(*name) == "" {
-		return fmt.Errorf("--name is required")
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	payload := map[string]any{
-		"id":            strings.TrimSpace(*id),
-		"name":          strings.TrimSpace(*name),
-		"description":   strings.TrimSpace(*description),
-		"status":        strings.TrimSpace(*status),
-		"roleIds":       splitCSV(*roleIDs),
-		"teamIds":       splitCSV(*teamIDs),
-		"scopeGrantIds": splitCSV(*scopeGrantIDs),
-	}
-	if *metadata != "" {
-		parsed, err := parseJSONObject([]byte(*metadata))
-		if err != nil {
-			return fmt.Errorf("invalid --metadata-json: %w", err)
-		}
-		payload["metadata"] = parsed
-	}
-	item, err := gatewayClient(rt, profile).CreateServiceAccount(ctx, payload, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCLIValue(item))
-}
-
-func runServiceAccountTokenCreate(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("service-account token-create", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	serviceAccountID := fs.String("service-account-id", "", "service account id")
-	name := fs.String("name", "", "token name")
-	scopes := fs.String("scopes", "", "comma-separated token scopes")
-	permissionKeys := fs.String("permission-keys", "", "comma-separated permission keys")
-	expiresAt := fs.String("expires-at", "", "RFC3339 expiration time")
-	metadata := fs.String("metadata-json", "", "metadata JSON object")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	saID := firstNonEmptyString(*serviceAccountID, fs.Arg(0))
-	if saID == "" {
-		return fmt.Errorf("service-account token-create requires --service-account-id or positional id")
-	}
-	if strings.TrimSpace(*name) == "" {
-		return fmt.Errorf("--name is required")
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	payload := map[string]any{
-		"name":           strings.TrimSpace(*name),
-		"scopes":         splitCSV(*scopes),
-		"permissionKeys": splitCSV(*permissionKeys),
-	}
-	if *expiresAt != "" {
-		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*expiresAt))
-		if err != nil {
-			return fmt.Errorf("invalid --expires-at; use RFC3339")
-		}
-		payload["expiresAt"] = parsed.Format(time.RFC3339)
-	}
-	if *metadata != "" {
-		parsed, err := parseJSONObject([]byte(*metadata))
-		if err != nil {
-			return fmt.Errorf("invalid --metadata-json: %w", err)
-		}
-		payload["metadata"] = parsed
-	}
-	created, err := gatewayClient(rt, profile).CreateServiceAccountToken(ctx, saID, payload, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCreatedToken(created))
-}
-
-func runServiceAccountTokenRevoke(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("service-account token-revoke", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	tokenID := fs.String("id", "", "token id")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	id := firstNonEmptyString(*tokenID, fs.Arg(0))
-	if id == "" {
-		return fmt.Errorf("service-account token-revoke requires a token id")
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	if err := gatewayClient(rt, profile).RevokeServiceAccountToken(ctx, id, gatewayHeaders(profile, "", "", "", "")); err != nil {
-		return err
-	}
-	fmt.Fprintf(rt.Out, "Revoked service account token %s\n", id)
-	return nil
-}
-
-func runAudit(ctx context.Context, args []string, rt Runtime) error {
-	if len(args) == 0 {
-		return fmt.Errorf("audit requires a subcommand: list")
-	}
-	switch args[0] {
-	case "list":
-		return runAuditList(ctx, args[1:], rt)
-	default:
-		return fmt.Errorf("unknown audit command %q", args[0])
-	}
-}
-
-func runAuditList(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("audit list", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	actor := fs.String("actor", "", "actor id")
-	actorType := fs.String("actor-type", "", "actor type")
-	aiClientID := fs.String("ai-client-id", "", "AI client id")
-	skillID := fs.String("skill-id", "", "skill id")
-	toolName := fs.String("tool-name", "", "tool name")
-	riskLevel := fs.String("risk-level", "", "risk level")
-	result := fs.String("result", "", "result")
-	action := fs.String("action", "", "action")
-	approvalRequestID := fs.String("approval-request-id", "", "approval request id")
-	from := fs.String("from", "", "RFC3339 start time")
-	to := fs.String("to", "", "RFC3339 end time")
-	limit := fs.Int("limit", 100, "result limit")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	query := url.Values{}
-	setQuery(query, "actor", *actor)
-	setQuery(query, "actorType", *actorType)
-	setQuery(query, "aiClientId", *aiClientID)
-	setQuery(query, "skillId", *skillID)
-	setQuery(query, "toolName", *toolName)
-	setQuery(query, "riskLevel", *riskLevel)
-	setQuery(query, "result", *result)
-	setQuery(query, "action", *action)
-	setQuery(query, "approvalRequestId", *approvalRequestID)
-	setQuery(query, "from", *from)
-	setQuery(query, "to", *to)
-	if *limit > 0 {
-		query.Set("limit", fmt.Sprint(*limit))
-	}
-	items, err := gatewayClient(rt, profile).ListAuditLogs(ctx, query, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCLIValue(items))
-}
-
-func runApproval(ctx context.Context, args []string, rt Runtime) error {
-	if len(args) == 0 {
-		return fmt.Errorf("approval requires a subcommand: list, timeline, approve, reject, or cancel")
-	}
-	switch args[0] {
-	case "list":
-		return runApprovalList(ctx, args[1:], rt)
-	case "timeline":
-		return runApprovalTimeline(ctx, args[1:], rt)
-	case "approve", "reject", "cancel":
-		return runApprovalDecision(ctx, args[0], args[1:], rt)
-	default:
-		return fmt.Errorf("unknown approval command %q", args[0])
-	}
-}
-
-func runApprovalList(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("approval list", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	id := fs.String("id", "", "approval request id")
-	status := fs.String("status", "", "approval request status")
-	actor := fs.String("actor", "", "actor id")
-	actorType := fs.String("actor-type", "", "actor type")
-	aiClientID := fs.String("ai-client-id", "", "AI client id")
-	skillID := fs.String("skill-id", "", "skill id")
-	toolName := fs.String("tool-name", "", "tool name")
-	riskLevel := fs.String("risk-level", "", "risk level")
-	strategy := fs.String("strategy", "", "approval strategy")
-	from := fs.String("from", "", "RFC3339 start time")
-	to := fs.String("to", "", "RFC3339 end time")
-	limit := fs.Int("limit", 100, "result limit")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	query := url.Values{}
-	setQuery(query, "approvalRequestId", *id)
-	setQuery(query, "status", *status)
-	setQuery(query, "actor", *actor)
-	setQuery(query, "actorType", *actorType)
-	setQuery(query, "aiClientId", *aiClientID)
-	setQuery(query, "skillId", *skillID)
-	setQuery(query, "toolName", *toolName)
-	setQuery(query, "riskLevel", *riskLevel)
-	setQuery(query, "strategy", *strategy)
-	setQuery(query, "from", *from)
-	setQuery(query, "to", *to)
-	if *limit > 0 {
-		query.Set("limit", fmt.Sprint(*limit))
-	}
-	items, err := gatewayClient(rt, profile).ListApprovalRequests(ctx, query, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCLIValue(items))
-}
-
-func runApprovalTimeline(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("approval timeline", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	requestID := ""
-	if len(args) > 0 && !strings.HasPrefix(strings.TrimSpace(args[0]), "-") {
-		requestID = strings.TrimSpace(args[0])
-		args = args[1:]
-	}
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if requestID == "" && fs.NArg() > 0 {
-		requestID = strings.TrimSpace(fs.Arg(0))
-	}
-	if requestID == "" {
-		return fmt.Errorf("approval timeline requires an approval request id")
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	item, err := gatewayClient(rt, profile).GetApprovalTimeline(ctx, requestID, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCLIValue(item))
-}
-
-func runApprovalDecision(ctx context.Context, action string, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("approval "+action, flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	comment := fs.String("comment", "", "decision comment")
-	requestID := ""
-	if len(args) > 0 && !strings.HasPrefix(strings.TrimSpace(args[0]), "-") {
-		requestID = strings.TrimSpace(args[0])
-		args = args[1:]
-	}
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if requestID == "" && fs.NArg() > 0 {
-		requestID = strings.TrimSpace(fs.Arg(0))
-	}
-	if requestID == "" {
-		return fmt.Errorf("approval %s requires an approval request id", action)
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	result, err := gatewayClient(rt, profile).DecideApprovalRequest(ctx, requestID, action, *comment, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	return writePrettyJSON(rt.Out, sanitizeCLIValue(result))
-}
-
-func runGovernance(ctx context.Context, args []string, rt Runtime) error {
-	if len(args) == 0 {
-		return fmt.Errorf("governance requires a subcommand: status")
-	}
-	switch args[0] {
-	case "status":
-		return runGovernanceStatus(ctx, args[1:], rt)
-	default:
-		return fmt.Errorf("unknown governance command %q", args[0])
-	}
-}
-
-func runGovernanceStatus(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("governance status", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	windowHours := fs.Int("window-hours", 24, "audit window in hours")
-	jsonOut := fs.Bool("json", false, "print full JSON")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *windowHours < 1 || *windowHours > 168 {
-		return fmt.Errorf("window-hours must be between 1 and 168")
-	}
-	_, _, profile, err := loadRuntimeProfile(rt, *profileFlag)
-	if err != nil {
-		return err
-	}
-	status, err := gatewayClient(rt, profile).GovernanceStatus(ctx, *windowHours, gatewayHeaders(profile, "", "", "", ""))
-	if err != nil {
-		return err
-	}
-	if *jsonOut {
-		return writePrettyJSON(rt.Out, sanitizeCLIValue(status))
-	}
-	fmt.Fprintf(rt.Out, "health: %s\t%s\n", status.Health.Status, redactSensitiveText(status.Health.Message))
-	for _, check := range status.Health.Checks {
-		fmt.Fprintf(rt.Out, "healthCheck: %s\t%s\tcount=%d\t%s\n", redactSensitiveText(check.Status), redactSensitiveText(check.Name), check.Count, redactSensitiveText(check.Message))
-	}
-	fmt.Fprintf(rt.Out, "windowHours: %d\n", status.WindowHours)
-	fmt.Fprintf(rt.Out, "calls: total=%d success=%d deny=%d failure=%d pendingApproval=%d dryRun=%d\n",
-		status.Metrics.TotalCalls,
-		status.Metrics.SuccessCount,
-		status.Metrics.DenyCount,
-		status.Metrics.FailureCount,
-		status.Metrics.PendingApprovalCount,
-		status.Metrics.DryRunCount,
-	)
-	fmt.Fprintf(rt.Out, "tokens: personalActive=%d serviceActive=%d expiringSoon=%d expiredActive=%d stale=%d neverUsed=%d lastUsed=%s\n",
-		status.Tokens.PersonalAccessTokens.Active,
-		status.Tokens.ServiceAccountTokens.Active,
-		len(status.Tokens.ExpiringSoon),
-		len(status.Tokens.ExpiredActive),
-		len(status.Tokens.Stale),
-		len(status.Tokens.NeverUsed),
-		status.Tokens.LastUsedTrackingState,
-	)
-	fmt.Fprintf(rt.Out, "clients: total=%d active=%d pendingApproval=%d registrationApproval=%s\n",
-		status.Clients.Total,
-		status.Clients.Active,
-		status.Clients.PendingApproval,
-		status.Clients.RegistrationApproval,
-	)
-	nextDue := ""
-	if status.Approvals.NextDueAt != nil {
-		nextDue = status.Approvals.NextDueAt.Format(time.RFC3339)
-	}
-	fmt.Fprintf(rt.Out, "approvals: pending=%d dueSoon=%d stale=%d overdue=%d oldestPendingHours=%d nextDue=%s\n",
-		status.Approvals.Pending,
-		status.Approvals.DueSoon,
-		status.Approvals.StalePending,
-		status.Approvals.Overdue,
-		status.Approvals.OldestPendingHours,
-		nextDue,
-	)
-	fmt.Fprintf(rt.Out, "policyCoverage: access=%d activeAccess=%d grants=%d activeGrants=%d skills=%d activeSkills=%d budget=%s rateLimit=%s redaction=%s resourceScopes=%s scopedAccess=%d scopedGrants=%d\n",
-		status.PolicyCoverage.AccessPolicies,
-		status.PolicyCoverage.ActiveAccessPolicies,
-		status.PolicyCoverage.ToolGrants,
-		status.PolicyCoverage.ActiveToolGrants,
-		status.PolicyCoverage.SkillBindings,
-		status.PolicyCoverage.ActiveSkillBindings,
-		status.PolicyCoverage.BudgetState,
-		status.PolicyCoverage.RateLimitState,
-		status.PolicyCoverage.RedactionPolicyState,
-		status.PolicyCoverage.ResourceScopeState,
-		status.PolicyCoverage.ResourceScopedAccessPolicies,
-		status.PolicyCoverage.ResourceScopedToolGrants,
-	)
-	fmt.Fprintf(rt.Out, "redaction: matches=%d audits=%d inputAudits=%d outputAudits=%d field=%d sensitiveKey=%d sensitiveText=%d valuePattern=%d classifier=%d structured=%d\n",
-		status.Redaction.TotalMatches,
-		status.Redaction.AuditsWithRedaction,
-		status.Redaction.InputAudits,
-		status.Redaction.OutputAudits,
-		status.Redaction.FieldMatches,
-		status.Redaction.SensitiveKeyMatches,
-		status.Redaction.SensitiveTextMatches,
-		status.Redaction.ValuePatternMatches,
-		status.Redaction.SecretClassifierMatches,
-		status.Redaction.StructuredSecretMatches,
-	)
-	if summary := governanceMetricCountsSummary(status.Redaction.TopTargets); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionTargets: %s\n", summary)
-	}
-	if summary := governanceMetricCountsSummary(status.Redaction.TopMatchTypes); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionMatchTypes: %s\n", summary)
-	}
-	if summary := governanceMetricCountsSummary(status.Redaction.TopClassifiers); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionClassifiers: %s\n", summary)
-	}
-	if summary := governanceMetricCountsSummary(status.Redaction.TopFieldPaths); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionFieldPaths: %s\n", summary)
-	}
-	if summary := governanceMetricCountsSummary(status.Redaction.TopPolicies); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionPolicies: %s\n", summary)
-	}
-	if summary := governanceMetricCountsSummary(status.Redaction.TopTools); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionTools: %s\n", summary)
-	}
-	for _, finding := range status.Anomalies {
-		fmt.Fprintf(rt.Out, "finding: %s\t%s\t%d%s\t%s\n", finding.Severity, finding.Type, finding.Count, governanceFindingDetailSuffix(finding), redactSensitiveText(finding.Summary))
-	}
-	for _, recommendation := range status.Recommendations {
-		fmt.Fprintf(rt.Out, "recommendation: %s\n", redactSensitiveText(recommendation))
-	}
-	for _, action := range status.RecommendationActions {
-		fmt.Fprintf(rt.Out, "recommendationAction: %s\t%s\taction=%s%s\t%s\n", action.Severity, action.Type, action.Action, governanceRecommendationActionSuffix(action), redactSensitiveText(action.Summary))
-	}
-	return nil
-}
-
-func governanceMetricCountsSummary(items []GovernanceMetricCount) string {
-	parts := make([]string, 0, len(items))
-	for _, item := range items {
-		key := strings.TrimSpace(redactSensitiveText(item.Key))
-		if key == "" {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%s=%d", key, item.Count))
-	}
-	return strings.Join(parts, ",")
-}
-
-func governanceFindingDetailSuffix(finding GovernanceFinding) string {
-	parts := make([]string, 0)
-	if finding.ActorType != "" || finding.ActorID != "" {
-		parts = append(parts, "actor="+redactSensitiveText(strings.Trim(strings.TrimSpace(finding.ActorType)+":"+strings.TrimSpace(finding.ActorID), ":")))
-	}
-	if finding.SubjectType != "" || finding.SubjectID != "" {
-		parts = append(parts, "subject="+redactSensitiveText(strings.Trim(strings.TrimSpace(finding.SubjectType)+":"+strings.TrimSpace(finding.SubjectID), ":")))
-	}
-	if finding.AIClientID != "" {
-		parts = append(parts, "client="+redactSensitiveText(finding.AIClientID))
-	}
-	if finding.PolicyID != "" {
-		parts = append(parts, "policy="+redactSensitiveText(finding.PolicyID))
-	}
-	if finding.ApprovalRequestID != "" {
-		parts = append(parts, "approval="+redactSensitiveText(finding.ApprovalRequestID))
-	}
-	if finding.GrantID != "" {
-		parts = append(parts, "grant="+redactSensitiveText(finding.GrantID))
-	}
-	if finding.ToolName != "" {
-		parts = append(parts, "tool="+redactSensitiveText(finding.ToolName))
-	}
-	if finding.RiskLevel != "" {
-		parts = append(parts, "risk="+redactSensitiveText(finding.RiskLevel))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "\t" + strings.Join(parts, " ")
-}
-
-func governanceRecommendationActionSuffix(action GovernanceRecommendationAction) string {
-	parts := make([]string, 0)
-	if strings.TrimSpace(action.TargetKind) != "" {
-		parts = append(parts, "target="+redactSensitiveText(strings.TrimSpace(action.TargetKind)))
-	}
-	if strings.TrimSpace(action.TargetID) != "" {
-		parts = append(parts, "id="+redactSensitiveText(strings.TrimSpace(action.TargetID)))
-	}
-	if action.Count > 0 {
-		parts = append(parts, fmt.Sprintf("count=%d", action.Count))
-	}
-	if len(action.Refs) > 0 {
-		refs := make([]string, 0, len(action.Refs))
-		for _, ref := range action.Refs {
-			refs = append(refs, redactSensitiveText(ref))
-		}
-		parts = append(parts, "refs="+strings.Join(refs, ","))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "\t" + strings.Join(parts, "\t")
-}
-
-func runProfile(args []string, rt Runtime) error {
-	if len(args) == 0 {
-		args = []string{"show"}
-	}
-	cfg, err := loadConfig(rt.ConfigPath)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "list":
-		names := make([]string, 0, len(cfg.Profiles))
-		for name := range cfg.Profiles {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			marker := " "
-			if name == cfg.CurrentProfile {
-				marker = "*"
+func extractTimeoutFlag(args []string) ([]string, string, error) {
+	out := make([]string, 0, len(args))
+	value := ""
+	for index := 0; index < len(args); index++ {
+		arg := strings.TrimSpace(args[index])
+		switch {
+		case arg == "--":
+			out = append(out, args[index:]...)
+			return out, value, nil
+		case arg == "--timeout":
+			if index+1 >= len(args) {
+				return nil, "", fmt.Errorf("--timeout requires a duration")
 			}
-			fmt.Fprintf(rt.Out, "%s %s\t%s\n", marker, name, cfg.Profiles[name].ServerURL)
+			index++
+			value = strings.TrimSpace(args[index])
+		case strings.HasPrefix(arg, "--timeout="):
+			value = strings.TrimSpace(strings.TrimPrefix(arg, "--timeout="))
+		default:
+			out = append(out, args[index])
 		}
-	case "use":
-		if len(args) < 2 {
-			return fmt.Errorf("profile use requires a profile name")
-		}
-		name := profileName(args[1])
-		if _, ok := cfg.Profiles[name]; !ok {
-			return fmt.Errorf("profile %q is not configured", name)
-		}
-		cfg.CurrentProfile = name
-		if err := saveConfig(rt.ConfigPath, cfg); err != nil {
-			return err
-		}
-		fmt.Fprintf(rt.Out, "Current profile: %s\n", name)
-	case "show":
-		name := profileName(firstArg(args[1:], cfg.CurrentProfile))
-		profile, ok := cfg.Profiles[name]
-		if !ok {
-			return fmt.Errorf("profile %q is not configured", name)
-		}
-		view := profile
-		view.AccessToken = redactToken(view.AccessToken)
-		view.RefreshToken = redactToken(view.RefreshToken)
-		return writePrettyJSON(rt.Out, map[string]any{"name": name, "profile": view})
-	default:
-		return fmt.Errorf("unknown profile command %q", args[0])
 	}
-	return nil
+	return out, value, nil
 }
 
-func runContext(args []string, rt Runtime) error {
-	if len(args) == 0 {
-		args = []string{"show"}
+func parseHTTPTimeout(source, value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("%s requires a duration", source)
 	}
-	switch args[0] {
-	case "show":
-		fs := flag.NewFlagSet("context show", flag.ContinueOnError)
-		fs.SetOutput(rt.Err)
-		profileFlag := fs.String("profile", "", "profile name")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		_, name, profile, err := loadRuntimeProfile(rt, *profileFlag)
-		if err != nil {
-			return err
-		}
-		return writePrettyJSON(rt.Out, map[string]any{
-			"profile":      name,
-			"serverUrl":    profile.ServerURL,
-			"aiClientId":   profile.AIClientID,
-			"aiClientName": profile.AIClientName,
-			"skillId":      profile.SkillID,
-			"source":       profile.Source,
-		})
-	case "set":
-		fs := flag.NewFlagSet("context set", flag.ContinueOnError)
-		fs.SetOutput(rt.Err)
-		profileFlag := fs.String("profile", "", "profile name")
-		aiClientID := fs.String("ai-client-id", "", "AI client id")
-		aiClientName := fs.String("ai-client", "", "AI client display name")
-		skillID := fs.String("skill-id", "", "skill id")
-		source := fs.String("source", "", "request source label")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		cfg, name, profile, err := loadRuntimeProfile(rt, *profileFlag)
-		if err != nil {
-			return err
-		}
-		if *aiClientID != "" {
-			profile.AIClientID = strings.TrimSpace(*aiClientID)
-		}
-		if *aiClientName != "" {
-			profile.AIClientName = strings.TrimSpace(*aiClientName)
-		}
-		if *skillID != "" {
-			profile.SkillID = strings.TrimSpace(*skillID)
-		}
-		if *source != "" {
-			profile.Source = strings.TrimSpace(*source)
-		}
-		cfg.Profiles[name] = profile
-		if err := saveConfig(rt.ConfigPath, cfg); err != nil {
-			return err
-		}
-		fmt.Fprintf(rt.Out, "Updated context for profile %s\n", name)
-		return nil
-	default:
-		return fmt.Errorf("unknown context command %q", args[0])
-	}
-}
-
-func runDiagnose(ctx context.Context, args []string, rt Runtime) error {
-	fs := flag.NewFlagSet("diagnose", flag.ContinueOnError)
-	fs.SetOutput(rt.Err)
-	profileFlag := fs.String("profile", "", "profile name")
-	toolName := fs.String("tool", "", "tool name to inspect")
-	resourceName := fs.String("resource", "", "resource URI to inspect")
-	promptName := fs.String("prompt", "", "prompt name to inspect")
-	aiClientID := fs.String("ai-client-id", "", "override AI client id for this diagnostic request")
-	aiClientName := fs.String("ai-client", "", "override AI client display name for this diagnostic request")
-	skillID := fs.String("skill-id", "", "override skill id for this diagnostic request")
-	source := fs.String("source", "", "override source label for this diagnostic request")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	_, name, profile, err := loadRuntimeProfile(rt, *profileFlag)
+	timeout, err := time.ParseDuration(value)
 	if err != nil {
-		return err
+		seconds, secondsErr := strconv.ParseFloat(value, 64)
+		if secondsErr != nil {
+			return 0, fmt.Errorf("invalid %s %q; use a Go duration like 30s or a number of seconds", source, value)
+		}
+		timeout = time.Duration(seconds * float64(time.Second))
 	}
-	manifest, err := gatewayClient(rt, profile).Capabilities(ctx, gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source))
-	if err != nil {
-		return err
+	if timeout <= 0 {
+		return 0, fmt.Errorf("%s must be greater than 0", source)
 	}
-	fmt.Fprintf(rt.Out, "profile: %s\nserver: %s\nuser: %s\n", name, profile.ServerURL, profile.UserName)
-	fmt.Fprintf(rt.Out, "tools: %d\nresources: %d\nprompts: %d\nskills: %d\n", len(manifest.Tools), len(manifest.Resources), len(manifest.Prompts), len(manifest.Skills))
-	fmt.Fprintf(rt.Out, "permissionKeys: %d\n", len(manifest.PermissionKeys))
-	fmt.Fprintf(rt.Out, "aiClientId: %s\naiClient: %s\nskillId: %s\nsource: %s\n", firstNonEmptyString(*aiClientID, profile.AIClientID), firstNonEmptyString(*aiClientName, profile.AIClientName), firstNonEmptyString(*skillID, profile.SkillID), firstNonEmptyString(*source, profile.Source, "soha"))
-	if strings.TrimSpace(*toolName) != "" {
-		diagnoseTool(rt.Out, manifest, strings.TrimSpace(*toolName))
-	}
-	if strings.TrimSpace(*resourceName) != "" {
-		diagnoseResource(rt.Out, manifest, strings.TrimSpace(*resourceName))
-	}
-	if strings.TrimSpace(*promptName) != "" {
-		diagnosePrompt(rt.Out, manifest, strings.TrimSpace(*promptName))
-	}
-	if len(manifest.Tools) == 0 {
-		fmt.Fprintln(rt.Out, "hint: no tools visible; check ai.gateway.invoke, MCP tool grants, access policies, and skill bindings.")
-	}
-	return nil
+	return timeout, nil
 }
 
-func runCompletion(args []string, rt Runtime) error {
-	shell := "bash"
-	if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
-		shell = strings.TrimSpace(args[0])
-	}
-	switch shell {
-	case "bash":
-		_, err := fmt.Fprint(rt.Out, bashCompletionScript)
-		return err
-	case "zsh":
-		_, err := fmt.Fprint(rt.Out, "#compdef soha\n"+bashCompletionScript)
-		return err
-	default:
-		return fmt.Errorf("unsupported shell %q", shell)
-	}
-}
-
-func loadRuntimeProfile(rt Runtime, requested string) (Config, string, ProfileConfig, error) {
+func loadRuntimeProfile(ctx context.Context, rt Runtime, requested string) (Config, string, ProfileConfig, error) {
 	cfg, err := loadConfig(rt.ConfigPath)
 	if err != nil {
 		return Config{}, "", ProfileConfig{}, err
@@ -1220,11 +619,19 @@ func loadRuntimeProfile(rt Runtime, requested string) (Config, string, ProfileCo
 	if err != nil {
 		return Config{}, "", ProfileConfig{}, err
 	}
-	if token := strings.TrimSpace(env("SOHA_TOKEN")); token != "" {
-		profile.AccessToken = token
-	}
-	if server := strings.TrimSpace(env("SOHA_SERVER")); server != "" {
+	token := strings.TrimSpace(env("SOHA_TOKEN"))
+	server := normalizeServerURL(env("SOHA_SERVER"))
+	if server != "" {
 		profile.ServerURL = server
+	}
+	if token != "" {
+		profile.AccessToken = token
+	} else if accessTokenExpired(profile, time.Now()) {
+		persist := server == ""
+		profile, err = refreshRuntimeProfile(ctx, rt, cfg, name, profile, persist)
+		if err != nil {
+			return Config{}, "", ProfileConfig{}, err
+		}
 	}
 	if strings.TrimSpace(profile.Source) == "" {
 		profile.Source = "soha"
@@ -1232,8 +639,56 @@ func loadRuntimeProfile(rt Runtime, requested string) (Config, string, ProfileCo
 	return cfg, name, profile, nil
 }
 
+func accessTokenExpired(profile ProfileConfig, now time.Time) bool {
+	return !profile.ExpiresAt.IsZero() && !profile.ExpiresAt.After(now)
+}
+
+func refreshRuntimeProfile(ctx context.Context, rt Runtime, cfg Config, name string, profile ProfileConfig, persist bool) (ProfileConfig, error) {
+	if strings.TrimSpace(profile.RefreshToken) == "" {
+		return ProfileConfig{}, fmt.Errorf("profile %q access token expired at %s and has no refresh token; run soha login again", name, profile.ExpiresAt.Format(time.RFC3339))
+	}
+	result, err := (APIClient{ServerURL: profile.ServerURL, Client: rt.HTTPClient, Timeout: rt.HTTPTimeout}).Refresh(ctx, profile.RefreshToken)
+	if err != nil {
+		return ProfileConfig{}, fmt.Errorf("refresh profile %q: %w", name, err)
+	}
+	updated, err := profileFromAuthResult(profile, result, time.Now())
+	if err != nil {
+		return ProfileConfig{}, fmt.Errorf("refresh profile %q: %w", name, err)
+	}
+	if persist {
+		cfg.Profiles[name] = updated
+		if err := saveConfig(rt.ConfigPath, cfg); err != nil {
+			return ProfileConfig{}, err
+		}
+	}
+	return updated, nil
+}
+
+func profileFromAuthResult(profile ProfileConfig, result loginResponse, now time.Time) (ProfileConfig, error) {
+	tokens := result.Data.Tokens
+	if strings.TrimSpace(tokens.AccessToken) == "" {
+		return ProfileConfig{}, fmt.Errorf("auth response did not include an access token")
+	}
+	profile.AccessToken = tokens.AccessToken
+	profile.RefreshToken = firstNonEmptyString(tokens.RefreshToken, profile.RefreshToken)
+	profile.ExpiresAt = tokenExpiresAt(tokens.ExpiresAt, tokens.ExpiresIn, now)
+	profile.UserID = firstNonEmptyString(result.Data.User.UserID, profile.UserID)
+	profile.UserName = firstNonEmptyString(result.Data.User.UserName, profile.UserName)
+	return profile, nil
+}
+
+func tokenExpiresAt(expiresAt time.Time, expiresIn int64, now time.Time) time.Time {
+	if !expiresAt.IsZero() {
+		return expiresAt
+	}
+	if expiresIn > 0 {
+		return now.Add(time.Duration(expiresIn) * time.Second)
+	}
+	return time.Time{}
+}
+
 func gatewayClient(rt Runtime, profile ProfileConfig) APIClient {
-	return APIClient{ServerURL: profile.ServerURL, Token: profile.AccessToken, Client: rt.HTTPClient}
+	return APIClient{ServerURL: profile.ServerURL, Token: profile.AccessToken, Client: rt.HTTPClient, Timeout: rt.HTTPTimeout}
 }
 
 func gatewayHeaders(profile ProfileConfig, aiClientID, aiClientName, skillID, source string) map[string]string {
@@ -1252,6 +707,184 @@ func writePrettyJSON(out io.Writer, value any) error {
 	}
 	_, err = fmt.Fprintln(out, string(raw))
 	return err
+}
+
+func normalizeOutputFormat(format string, allowed ...string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(format))
+	if normalized == "" && len(allowed) > 0 {
+		normalized = allowed[0]
+	}
+	for _, item := range allowed {
+		if normalized == item {
+			return normalized, nil
+		}
+	}
+	return "", fmt.Errorf("unsupported output format %q", format)
+}
+
+func normalizeCapabilityDomain(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "gateway", "ai-gateway", "aigateway":
+		return "gateway", nil
+	case "platform", "cluster", "clusters":
+		return "platform", nil
+	default:
+		return "", fmt.Errorf("unsupported capability domain %q", value)
+	}
+}
+
+func writeStructuredOutput(out io.Writer, format string, value any) error {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "json":
+		return writePrettyJSON(out, value)
+	case "yaml":
+		return writeYAML(out, value)
+	default:
+		return fmt.Errorf("unsupported output format %q", format)
+	}
+}
+
+func writeYAML(out io.Writer, value any) error {
+	normalized, err := normalizeYAMLValue(value)
+	if err != nil {
+		return err
+	}
+	if err := writeYAMLValue(out, normalized, 0); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out)
+	return err
+}
+
+func normalizeYAMLValue(value any) (any, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func writeYAMLValue(out io.Writer, value any, indent int) error {
+	prefix := strings.Repeat(" ", indent)
+	switch typed := value.(type) {
+	case map[string]any:
+		if len(typed) == 0 {
+			_, err := fmt.Fprintf(out, "%s{}\n", prefix)
+			return err
+		}
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			item := typed[key]
+			if yamlInlineValue(item) {
+				if _, err := fmt.Fprintf(out, "%s%s: %s\n", prefix, yamlKey(key), yamlScalar(item)); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := fmt.Fprintf(out, "%s%s:\n", prefix, yamlKey(key)); err != nil {
+				return err
+			}
+			if err := writeYAMLValue(out, item, indent+2); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		if len(typed) == 0 {
+			_, err := fmt.Fprintf(out, "%s[]\n", prefix)
+			return err
+		}
+		for _, item := range typed {
+			if yamlInlineValue(item) {
+				if _, err := fmt.Fprintf(out, "%s- %s\n", prefix, yamlScalar(item)); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := fmt.Fprintf(out, "%s-\n", prefix); err != nil {
+				return err
+			}
+			if err := writeYAMLValue(out, item, indent+2); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		_, err := fmt.Fprintf(out, "%s%s\n", prefix, yamlScalar(typed))
+		return err
+	}
+}
+
+func yamlInlineValue(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		return len(typed) == 0
+	case []any:
+		return len(typed) == 0
+	default:
+		return true
+	}
+}
+
+func yamlKey(value string) string {
+	if yamlBareString(value) {
+		return value
+	}
+	return strconv.Quote(value)
+}
+
+func yamlScalar(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return "null"
+	case string:
+		if yamlBareString(typed) {
+			return typed
+		}
+		return strconv.Quote(typed)
+	case bool:
+		return strconv.FormatBool(typed)
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case map[string]any:
+		if len(typed) == 0 {
+			return "{}"
+		}
+	case []any:
+		if len(typed) == 0 {
+			return "[]"
+		}
+	}
+	return strconv.Quote(fmt.Sprint(value))
+}
+
+func yamlBareString(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	switch strings.ToLower(value) {
+	case "null", "true", "false", "yes", "no", "on", "off", "~":
+		return false
+	}
+	if strings.HasPrefix(value, "-") {
+		return false
+	}
+	for _, char := range value {
+		switch char {
+		case ' ', '\t', '\n', '\r', ':', '#', '{', '}', '[', ']', '&', '*', '?', '|', '<', '>', '=', '!', '%', '@', '`', '"', '\'':
+			return false
+		}
+	}
+	return true
 }
 
 func readToolInput(rt Runtime, path, inline string) (map[string]any, error) {
@@ -1401,6 +1034,12 @@ func sanitizeCLIValue(value any) any {
 		return typed
 	case GovernanceStatus:
 		return sanitizeGovernanceStatus(typed)
+	case PluginManifest:
+		return sanitizeCLIJSONValue(typed)
+	case MarketplacePlugin:
+		return sanitizeCLIJSONValue(typed)
+	case InstalledPlugin:
+		return sanitizeCLIJSONValue(typed)
 	case []PersonalAccessToken:
 		out := make([]any, len(typed))
 		for i, item := range typed {
@@ -1431,6 +1070,10 @@ func sanitizeCLIValue(value any) any {
 			out[i] = sanitizeCLIValue(item)
 		}
 		return out
+	case []MarketplacePlugin:
+		return sanitizeCLIJSONValue(typed)
+	case []InstalledPlugin:
+		return sanitizeCLIJSONValue(typed)
 	case []any:
 		out := make([]any, len(typed))
 		for i, item := range typed {
@@ -1444,6 +1087,18 @@ func sanitizeCLIValue(value any) any {
 	default:
 		return typed
 	}
+}
+
+func sanitizeCLIJSONValue(value any) any {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return value
+	}
+	return sanitizeCLIValue(normalized)
 }
 
 func sanitizeGovernanceStatus(status GovernanceStatus) GovernanceStatus {
@@ -1556,105 +1211,6 @@ func redactSensitiveText(value string) string {
 	return value
 }
 
-func diagnoseTool(out io.Writer, manifest Manifest, toolName string) {
-	for _, tool := range manifest.Tools {
-		if tool.Name == toolName {
-			fmt.Fprintf(out, "tool: %s\nriskLevel: %s\nrequiresApproval: %t\n", tool.Name, tool.RiskLevel, tool.RequiresApproval)
-			fmt.Fprintf(out, "domain: %s\naction: %s\nmcpAdapterId: %s\nmcpToolName: %s\n", tool.Domain, tool.Action, tool.MCPAdapterID, tool.MCPToolName)
-			fmt.Fprintf(out, "requiredPermissionKeys: %s\n", strings.Join(tool.PermissionKeys, ","))
-			fmt.Fprintf(out, "requiredScopes: %s\n", strings.Join(tool.RequiredScopes, ","))
-			required, fields := toolSchemaSummary(tool.InputSchema)
-			fmt.Fprintf(out, "inputRequired: %s\n", strings.Join(required, ","))
-			fmt.Fprintf(out, "inputFields: %s\n", strings.Join(fields, ","))
-			outputRequired, outputFields := toolSchemaSummary(tool.OutputSchema)
-			fmt.Fprintf(out, "outputRequired: %s\n", strings.Join(outputRequired, ","))
-			fmt.Fprintf(out, "outputFields: %s\n", strings.Join(outputFields, ","))
-			fmt.Fprintln(out, "hint: if invocation is denied, inspect MCP tool grants, AI access policies, skill bindings, resource scopes, and domain permission keys.")
-			return
-		}
-	}
-	fmt.Fprintf(out, "tool: %s not visible\n", toolName)
-	fmt.Fprintln(out, "hint: check ai.gateway.invoke, domain permission keys, MCP tool grants, AI access policies, skill bindings, AI client context, and resource scopes.")
-}
-
-func toolSchemaSummary(schema map[string]any) ([]string, []string) {
-	if len(schema) == 0 {
-		return nil, nil
-	}
-	required := stringSliceFromAny(schema["required"])
-	properties, _ := schema["properties"].(map[string]any)
-	fields := make([]string, 0, len(properties))
-	for key := range properties {
-		key = strings.TrimSpace(key)
-		if key != "" {
-			fields = append(fields, key)
-		}
-	}
-	sort.Strings(required)
-	sort.Strings(fields)
-	return required, fields
-}
-
-func stringSliceFromAny(value any) []string {
-	switch typed := value.(type) {
-	case []string:
-		out := append([]string(nil), typed...)
-		sort.Strings(out)
-		return out
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			text := strings.TrimSpace(fmt.Sprint(item))
-			if text != "" {
-				out = append(out, text)
-			}
-		}
-		sort.Strings(out)
-		return out
-	default:
-		return nil
-	}
-}
-
-func diagnoseResource(out io.Writer, manifest Manifest, resourceName string) {
-	for _, resource := range manifest.Resources {
-		if resource.Name == resourceName {
-			fmt.Fprintf(out, "resource: %s\n", resource.Name)
-			fmt.Fprintf(out, "description: %s\n", resource.Description)
-			fmt.Fprintf(out, "requiredPermissionKeys: %s\n", strings.Join(resource.PermissionKeys, ","))
-			fmt.Fprintf(out, "requiredScopes: %s\n", strings.Join(resource.RequiredScopes, ","))
-			contextRequired, contextFields := toolSchemaSummary(resource.ContextSchema)
-			fmt.Fprintf(out, "contextRequired: %s\n", strings.Join(contextRequired, ","))
-			fmt.Fprintf(out, "contextFields: %s\n", strings.Join(contextFields, ","))
-			fmt.Fprintln(out, "hint: resource reads proxy to Gateway resources/read; check ai.gateway.invoke, resource permission keys, skill bindings, AI client context, and context scope fields.")
-			return
-		}
-	}
-	fmt.Fprintf(out, "resource: %s not visible\n", resourceName)
-	fmt.Fprintln(out, "hint: check ai.gateway.invoke, resource permission keys, skill bindings, AI client context, and the manifest resource URI.")
-}
-
-func diagnosePrompt(out io.Writer, manifest Manifest, promptName string) {
-	for _, prompt := range manifest.Prompts {
-		if prompt.Name == promptName {
-			fmt.Fprintf(out, "prompt: %s\n", prompt.Name)
-			fmt.Fprintf(out, "description: %s\n", prompt.Description)
-			fmt.Fprintf(out, "requiredPermissionKeys: %s\n", strings.Join(prompt.PermissionKeys, ","))
-			fmt.Fprintf(out, "requiredScopes: %s\n", strings.Join(prompt.RequiredScopes, ","))
-			argumentRequired, argumentFields := toolSchemaSummary(prompt.ArgumentSchema)
-			contextRequired, contextFields := toolSchemaSummary(prompt.ContextSchema)
-			fmt.Fprintf(out, "argumentRequired: %s\n", strings.Join(argumentRequired, ","))
-			fmt.Fprintf(out, "argumentFields: %s\n", strings.Join(argumentFields, ","))
-			fmt.Fprintf(out, "contextRequired: %s\n", strings.Join(contextRequired, ","))
-			fmt.Fprintf(out, "contextFields: %s\n", strings.Join(contextFields, ","))
-			fmt.Fprintln(out, "hint: prompt reads proxy to Gateway prompts/get; check ai.gateway.invoke, prompt permission keys, skill bindings, AI client context, and prompt arguments/context.")
-			return
-		}
-	}
-	fmt.Fprintf(out, "prompt: %s not visible\n", promptName)
-	fmt.Fprintln(out, "hint: check ai.gateway.invoke, prompt permission keys, skill bindings, AI client context, and the manifest prompt name.")
-}
-
 func extractLeadingToolName(args []string) (string, []string) {
 	return extractLeadingValue(args)
 }
@@ -1694,65 +1250,3 @@ func approvalText(value bool) string {
 func env(key string) string {
 	return strings.TrimSpace(os.Getenv(key))
 }
-
-const bashCompletionScript = `#!/usr/bin/env bash
-_soha_completion() {
-  local cur prev commands
-  COMPREPLY=()
-  cur="${COMP_WORDS[COMP_CWORD]}"
-  prev="${COMP_WORDS[COMP_CWORD-1]}"
-  commands="login capabilities tool resource prompt token service-account audit approval governance profile context mcp skill diagnose completion help"
-  case "${COMP_WORDS[1]}" in
-    tool)
-      COMPREPLY=($(compgen -W "call" -- "$cur"))
-      return 0
-      ;;
-    resource)
-      COMPREPLY=($(compgen -W "read" -- "$cur"))
-      return 0
-      ;;
-    prompt)
-      COMPREPLY=($(compgen -W "get" -- "$cur"))
-      return 0
-      ;;
-    token)
-      COMPREPLY=($(compgen -W "list create revoke" -- "$cur"))
-      return 0
-      ;;
-    service-account)
-      COMPREPLY=($(compgen -W "list create token-list token-create token-revoke" -- "$cur"))
-      return 0
-      ;;
-    audit)
-      COMPREPLY=($(compgen -W "list" -- "$cur"))
-      return 0
-      ;;
-    approval)
-      COMPREPLY=($(compgen -W "list timeline approve reject cancel" -- "$cur"))
-      return 0
-      ;;
-    governance)
-      COMPREPLY=($(compgen -W "status" -- "$cur"))
-      return 0
-      ;;
-    profile)
-      COMPREPLY=($(compgen -W "list show use" -- "$cur"))
-      return 0
-      ;;
-    context)
-      COMPREPLY=($(compgen -W "show set" -- "$cur"))
-      return 0
-      ;;
-    mcp)
-      COMPREPLY=($(compgen -W "start install" -- "$cur"))
-      return 0
-      ;;
-    skill)
-      COMPREPLY=($(compgen -W "list install" -- "$cur"))
-      return 0
-      ;;
-  esac
-  COMPREPLY=($(compgen -W "$commands" -- "$cur"))
-}
-complete -F _soha_completion soha
-`

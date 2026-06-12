@@ -2,6 +2,9 @@ module github.com/opensoha/soha-cli
 
 go 1.23.0
 
-require github.com/opensoha/soha-contracts v0.0.0
+require (
+	github.com/opensoha/soha-contracts v0.1.0
+	golang.org/x/term v0.27.0
+)
 
-replace github.com/opensoha/soha-contracts v0.0.0 => ../soha-contracts
+require golang.org/x/sys v0.28.0 // indirect

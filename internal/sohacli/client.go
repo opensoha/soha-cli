@@ -9,19 +9,26 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	sohaapi "github.com/opensoha/soha-contracts/gen/go/sohaapi"
 )
 
-const userAgent = "soha/0.1"
+const (
+	userAgent          = "soha/0.1"
+	defaultHTTPTimeout = 30 * time.Second
+)
 
 type APIClient struct {
 	ServerURL string
 	Token     string
 	Client    *http.Client
+	Timeout   time.Duration
 }
 
 type loginResponse = sohaapi.AuthResultEnvelope
+
+type refreshResponse = sohaapi.AuthResultEnvelope
 
 type manifestResponse = sohaapi.AIGatewayManifestEnvelope
 
@@ -121,11 +128,108 @@ type PluginInstallRequest = sohaapi.PluginInstallRequest
 
 type PluginConfigRequest = sohaapi.PluginConfigRequest
 
+type ClusterCapabilityStatus string
+
+type ClusterCapabilityRiskLevel string
+
+type ClusterCapabilityModeSupport struct {
+	Status ClusterCapabilityStatus `json:"status"`
+	Reason string                  `json:"reason,omitempty"`
+	Notes  []string                `json:"notes,omitempty"`
+}
+
+type ClusterCapabilityMatrixEntry struct {
+	Key              string                       `json:"key"`
+	Label            string                       `json:"label"`
+	Category         string                       `json:"category"`
+	RequiredScopes   []string                     `json:"requiredScopes,omitempty"`
+	RiskLevel        ClusterCapabilityRiskLevel   `json:"riskLevel"`
+	RequiresApproval bool                         `json:"requiresApproval"`
+	DocsURL          string                       `json:"docsUrl,omitempty"`
+	Direct           ClusterCapabilityModeSupport `json:"direct"`
+	Agent            ClusterCapabilityModeSupport `json:"agent"`
+}
+
+type CloudFleetCapabilityDiagnosticsEnvelope struct {
+	Diagnostics CloudFleetCapabilityDiagnostics `json:"diagnostics"`
+}
+
+type CloudFleetCapabilityDiagnostics struct {
+	TenantID               string                              `json:"tenantId"`
+	FleetID                string                              `json:"fleetId"`
+	Mode                   string                              `json:"mode"`
+	Status                 string                              `json:"status"`
+	ClusterStatusCounts    CloudFleetClusterStatusCounts       `json:"clusterStatusCounts"`
+	CapabilityStatusCounts CloudFleetCapabilityStatusCounts    `json:"capabilityStatusCounts"`
+	CapabilityGaps         []CloudFleetCapabilityGap           `json:"capabilityGaps"`
+	Clusters               []CloudFleetClusterCapabilityStatus `json:"clusters"`
+	Message                string                              `json:"message"`
+}
+
+type CloudFleetClusterStatusCounts struct {
+	Total     int `json:"total"`
+	Available int `json:"available"`
+	Degraded  int `json:"degraded"`
+	Unknown   int `json:"unknown"`
+}
+
+type CloudFleetCapabilityStatusCounts struct {
+	Available   int `json:"available"`
+	Partial     int `json:"partial"`
+	Unsupported int `json:"unsupported"`
+}
+
+type CloudFleetCapabilityGap struct {
+	Key                   string                          `json:"key"`
+	PartialClusterIDs     []string                        `json:"partialClusterIds"`
+	UnsupportedClusterIDs []string                        `json:"unsupportedClusterIds"`
+	MissingClusterIDs     []string                        `json:"missingClusterIds"`
+	Reasons               []CloudFleetCapabilityGapReason `json:"reasons"`
+}
+
+type CloudFleetCapabilityGapReason struct {
+	ClusterID string `json:"clusterId"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason"`
+}
+
+type CloudFleetClusterCapabilityStatus struct {
+	ClusterID            string                       `json:"clusterId"`
+	ClusterName          string                       `json:"clusterName"`
+	DisplayName          string                       `json:"displayName"`
+	Status               string                       `json:"status"`
+	CapabilitySetVersion string                       `json:"capabilitySetVersion,omitempty"`
+	RecordedAt           string                       `json:"recordedAt,omitempty"`
+	Counts               CloudFleetCapabilityCounts   `json:"counts"`
+	DegradedCapabilities []CloudFleetCapabilityReason `json:"degradedCapabilities"`
+	MissingCapabilities  []string                     `json:"missingCapabilities"`
+}
+
+type CloudFleetCapabilityCounts struct {
+	Available   int `json:"available"`
+	Partial     int `json:"partial"`
+	Unsupported int `json:"unsupported"`
+}
+
+type CloudFleetCapabilityReason struct {
+	Key    string `json:"key"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+}
+
 func (c APIClient) Login(ctx context.Context, login, password string) (loginResponse, error) {
 	var out loginResponse
 	err := c.doJSON(ctx, http.MethodPost, "/api/v1/auth/login", "", nil, map[string]string{
 		"login":    login,
 		"password": password,
+	}, &out)
+	return out, err
+}
+
+func (c APIClient) Refresh(ctx context.Context, refreshToken string) (refreshResponse, error) {
+	var out refreshResponse
+	err := c.doJSON(ctx, http.MethodPost, "/api/v1/auth/refresh", "", nil, map[string]string{
+		"refreshToken": strings.TrimSpace(refreshToken),
 	}, &out)
 	return out, err
 }
@@ -136,6 +240,23 @@ func (c APIClient) Capabilities(ctx context.Context, headers map[string]string) 
 		return Manifest{}, err
 	}
 	return out.Data, nil
+}
+
+func (c APIClient) ClusterCapabilities(ctx context.Context) ([]ClusterCapabilityMatrixEntry, error) {
+	var out itemsResponse[ClusterCapabilityMatrixEntry]
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/clusters/capabilities", c.Token, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+func (c APIClient) CloudFleetDiagnostics(ctx context.Context, tenantID, fleetID string) (CloudFleetCapabilityDiagnostics, error) {
+	var out CloudFleetCapabilityDiagnosticsEnvelope
+	path := "/cloud/tenants/" + url.PathEscape(strings.TrimSpace(tenantID)) + "/agent-fleets/" + url.PathEscape(strings.TrimSpace(fleetID)) + "/diagnostics"
+	if err := c.doJSON(ctx, http.MethodGet, path, c.Token, nil, nil, &out); err != nil {
+		return CloudFleetCapabilityDiagnostics{}, err
+	}
+	return out.Diagnostics, nil
 }
 
 func (c APIClient) InvokeTool(ctx context.Context, toolName string, input map[string]any, headers map[string]string) (ToolInvocationResult, error) {
@@ -417,13 +538,10 @@ func (c APIClient) doJSON(ctx context.Context, method, path, token string, heade
 			req.Header.Set(key, value)
 		}
 	}
-	client := c.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := c.httpClient()
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s %s request failed: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
@@ -431,10 +549,13 @@ func (c APIClient) doJSON(ctx context.Context, method, path, token string, heade
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s failed: %s: %s", method, path, resp.Status, responseErrorMessage(raw))
+		return fmt.Errorf("%s %s failed: %s: %s", method, path, resp.Status, responseErrorMessage(resp.Status, raw))
 	}
-	if out == nil || len(raw) == 0 {
+	if out == nil {
 		return nil
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return fmt.Errorf("%s %s returned empty response", method, path)
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -442,7 +563,33 @@ func (c APIClient) doJSON(ctx context.Context, method, path, token string, heade
 	return nil
 }
 
-func responseErrorMessage(raw []byte) string {
+func (c APIClient) httpClient() *http.Client {
+	timeout := c.Timeout
+	if c.Client == nil {
+		if timeout <= 0 {
+			timeout = defaultHTTPTimeout
+		}
+		return &http.Client{Timeout: timeout}
+	}
+	if timeout <= 0 && c.Client.Timeout > 0 {
+		return c.Client
+	}
+	if timeout <= 0 {
+		timeout = defaultHTTPTimeout
+	}
+	if c.Client.Timeout == timeout {
+		return c.Client
+	}
+	clone := *c.Client
+	clone.Timeout = timeout
+	return &clone
+}
+
+func responseErrorMessage(status string, raw []byte) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return status
+	}
 	var wrapped struct {
 		Error struct {
 			Code    string `json:"code"`
@@ -454,6 +601,16 @@ func responseErrorMessage(raw []byte) string {
 			return wrapped.Error.Code + ": " + wrapped.Error.Message
 		}
 		return wrapped.Error.Message
+	}
+	var plain struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &plain) == nil && plain.Message != "" {
+		if plain.Code != "" {
+			return plain.Code + ": " + plain.Message
+		}
+		return plain.Message
 	}
 	return strings.TrimSpace(string(raw))
 }

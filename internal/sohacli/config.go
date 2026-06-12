@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const defaultProfile = "default"
+const (
+	defaultProfile   = "default"
+	defaultServerURL = "https://mcp.opensoha.com"
+)
 
 type Config struct {
 	CurrentProfile string                   `json:"currentProfile"`
@@ -85,6 +88,22 @@ func profileName(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return defaultProfile
+	}
+	return value
+}
+
+func defaultServerFromEnv() string {
+	return normalizeServerURL(firstNonEmptyString(env("SOHA_SERVER"), defaultServerURL))
+}
+
+func normalizeServerURL(value string) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		value = "https://" + value
 	}
 	return value
 }

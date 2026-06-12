@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+      - name: Test
+        run: GOWORK=off go test ./...
+      - name: Build archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          NAME="soha_${VERSION}_${GOOS}_${GOARCH}"
+          EXT=""
+          if [[ "${GOOS}" == "windows" ]]; then
+            EXT=".exe"
+          fi
+          mkdir -p out dist
+          go build -trimpath -ldflags "-s -w -X github.com/opensoha/soha-cli/internal/sohacli.version=${VERSION} -X github.com/opensoha/soha-cli/internal/sohacli.commit=${GITHUB_SHA} -X github.com/opensoha/soha-cli/internal/sohacli.date=${BUILD_DATE}" -o "out/soha${EXT}" ./cmd/soha
+          if [[ "${GOOS}" == "windows" ]]; then
+            (cd out && zip -q "../dist/${NAME}.zip" "soha${EXT}")
+          else
+            tar -C out -czf "dist/${NAME}.tar.gz" soha
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  checksums:
+    name: Checksums
+    runs-on: ubuntu-latest
+    needs:
+      - build
+      - release-smoke
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find dist -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release/ \;
+          (cd release && sha256sum * > checksums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: release/checksums.txt
+
+  release-smoke:
+    name: Release binary smoke
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-linux-amd64
+          path: smoke
+      - name: Smoke test Linux release archive
+        run: |
+          set -euo pipefail
+          archive="$(find smoke -type f -name 'soha_*_linux_amd64.tar.gz' -print -quit)"
+          ./scripts/release-smoke.sh "${archive}"
+
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: checksums
+    if: github.ref_type == 'tag'
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+      - name: Publish release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find downloaded -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "checksums.txt" \) -exec cp {} release/ \;
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("$file")
+          done < <(find release -type f -print0 | sort -z)
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${files[@]}" --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes
+          fi

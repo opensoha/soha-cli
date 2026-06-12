@@ -26,7 +26,7 @@ func runSkill(args []string, rt Runtime) error {
 }
 
 func runSkillList(args []string, rt Runtime) error {
-	fs := newFlagSet("skill list", rt.Err)
+	fs := newRuntimeFlagSet("skill list", args, rt)
 	source := fs.String("source", defaultSkillSourcePath(), "source skill directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -42,7 +42,7 @@ func runSkillList(args []string, rt Runtime) error {
 }
 
 func runSkillInstall(args []string, rt Runtime) error {
-	fs := newFlagSet("skill install", rt.Err)
+	fs := newRuntimeFlagSet("skill install", args, rt)
 	source := fs.String("source", defaultSkillSourcePath(), "source skill directory")
 	dest := fs.String("dest", defaultSkillInstallPath(), "destination skill directory")
 	all := fs.Bool("all", false, "install all source skills")
@@ -75,6 +75,15 @@ func defaultSkillSourcePath() string {
 	if value := env("SOHA_SKILLS_SOURCE"); value != "" {
 		return value
 	}
+	for _, candidate := range []string{
+		defaultSkillSource,
+		filepath.Join("soha-skills", defaultSkillSource),
+		filepath.Join("..", "soha-skills", defaultSkillSource),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
 	return defaultSkillSource
 }
 
@@ -94,6 +103,7 @@ func listLocalSkills(source string) ([]string, error) {
 	if source == "" {
 		return nil, fmt.Errorf("skill source directory is required")
 	}
+	source = normalizeSkillSourcePath(source)
 	entries, err := os.ReadDir(source)
 	if err != nil {
 		return nil, err
@@ -120,6 +130,7 @@ func installLocalSkill(source, dest, name string, overwrite bool) (string, error
 	if source == "" {
 		return "", fmt.Errorf("skill source directory is required")
 	}
+	source = normalizeSkillSourcePath(source)
 	dest = strings.TrimSpace(dest)
 	if dest == "" {
 		return "", fmt.Errorf("skill destination directory is required")
@@ -155,6 +166,36 @@ func installLocalSkill(source, dest, name string, overwrite bool) (string, error
 		return "", err
 	}
 	return targetFile, nil
+}
+
+func normalizeSkillSourcePath(source string) string {
+	source = strings.TrimSpace(source)
+	for _, candidate := range []string{
+		source,
+		filepath.Join(source, defaultSkillSource),
+		filepath.Join(source, "ai-gateway"),
+	} {
+		if isSkillSourceDir(candidate) {
+			return candidate
+		}
+	}
+	return source
+}
+
+func isSkillSourceDir(source string) bool {
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !isSafeSkillName(entry.Name()) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(source, entry.Name(), "SKILL.md")); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func isSafeSkillName(name string) bool {
