@@ -1696,6 +1696,76 @@ func TestRunAuditListAndDiagnoseHints(t *testing.T) {
 	}
 }
 
+func TestRunDiagnoseReportsApprovalRequiredToolState(t *testing.T) {
+	var capabilitiesCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/ai-gateway/capabilities" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		capabilitiesCalls++
+		writeJSON(t, w, map[string]any{"data": map[string]any{
+			"name":           "soha AI Gateway",
+			"permissionKeys": []string{"ai.gateway.invoke", "delivery.releases.execute"},
+			"tools": []map[string]any{{
+				"name":             "delivery.actions.trigger",
+				"domain":           "delivery",
+				"action":           "trigger",
+				"riskLevel":        "mutate",
+				"mcpAdapterId":     "delivery.v1",
+				"mcpToolName":      "delivery.actions.trigger",
+				"requiresApproval": true,
+				"permissionKeys":   []string{"ai.gateway.invoke", "delivery.releases.execute"},
+				"requiredScopes":   []string{"application", "environment"},
+				"inputSchema": map[string]any{
+					"type":     "object",
+					"required": []string{"applicationId", "environmentId"},
+					"properties": map[string]any{
+						"applicationId": map[string]any{"type": "string"},
+						"environmentId": map[string]any{"type": "string"},
+						"releaseId":     map[string]any{"type": "string"},
+					},
+				},
+			}},
+			"resources": []map[string]any{},
+			"prompts":   []map[string]any{},
+			"skills":    []map[string]any{},
+		}})
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	code := Run(context.Background(), []string{"diagnose", "--profile", "dev", "--tool", "delivery.actions.trigger"}, Runtime{
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ConfigPath: writeTestConfig(t, server.URL),
+	})
+	if code != 0 {
+		t.Fatalf("diagnose returned %d", code)
+	}
+	if capabilitiesCalls != 1 {
+		t.Fatalf("capabilities endpoint calls = %d, want 1", capabilitiesCalls)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"tool: delivery.actions.trigger",
+		"riskLevel: mutate",
+		"requiresApproval: true",
+		"requiredPermissionKeys: ai.gateway.invoke,delivery.releases.execute",
+		"requiredScopes: application,environment",
+		"inputRequired: applicationId,environmentId",
+		"inputFields: applicationId,environmentId,releaseId",
+		"AI access policies",
+		"resource scopes",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("diagnose output missing %q in %s", want, text)
+		}
+	}
+}
+
 func TestRunGovernanceStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/ai-gateway/governance/status" {
