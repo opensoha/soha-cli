@@ -290,6 +290,110 @@ func TestExpiredProfileRefreshesAndPersists(t *testing.T) {
 	}
 }
 
+func TestUnauthorizedProfileRefreshesRetriesAndPersists(t *testing.T) {
+	var refreshCalls int
+	var capabilitiesCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshCalls++
+			if r.Header.Get("Authorization") != "" {
+				t.Fatalf("refresh should not send an Authorization header, got %q", r.Header.Get("Authorization"))
+			}
+			var req map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode refresh request: %v", err)
+			}
+			if req["refreshToken"] != "refresh-old" {
+				t.Fatalf("unexpected refresh token payload %#v", req)
+			}
+			writeJSON(t, w, map[string]any{"data": map[string]any{
+				"user": map[string]any{
+					"userId":   "u-2",
+					"userName": "Grace",
+				},
+				"tokens": map[string]any{
+					"accessToken":  "access-new",
+					"refreshToken": "refresh-new",
+					"expiresIn":    3600,
+					"tokenType":    "Bearer",
+				},
+			}})
+		case "/api/v1/ai-gateway/capabilities":
+			capabilitiesCalls++
+			switch capabilitiesCalls {
+			case 1:
+				if r.Header.Get("Authorization") != "Bearer access-old" {
+					t.Fatalf("unexpected first Authorization header %q", r.Header.Get("Authorization"))
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"authorization changed, refresh required"}}`))
+			case 2:
+				if r.Header.Get("Authorization") != "Bearer access-new" {
+					t.Fatalf("unexpected retry Authorization header %q", r.Header.Get("Authorization"))
+				}
+				writeJSON(t, w, map[string]any{"data": map[string]any{
+					"name":           "soha AI Gateway",
+					"permissionKeys": []string{},
+					"tools":          []map[string]any{},
+					"resources":      []map[string]any{},
+					"prompts":        []map[string]any{},
+					"skills":         []map[string]any{},
+				}})
+			default:
+				t.Fatalf("unexpected capabilities call %d", capabilitiesCalls)
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:    server.URL,
+		AccessToken:  "access-old",
+		RefreshToken: "refresh-old",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		UserID:       "u-1",
+		UserName:     "Ada",
+		AIClientID:   "profile-client",
+		AIClientName: "Codex",
+		SkillID:      "profile-skill",
+		Source:       "profile-source",
+	})
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"capabilities", "--profile", "dev"}, Runtime{
+		Out:        &out,
+		Err:        &errOut,
+		ConfigPath: configPath,
+	})
+	if code != 0 {
+		t.Fatalf("capabilities returned %d, stderr %q", code, errOut.String())
+	}
+	if refreshCalls != 1 || capabilitiesCalls != 2 {
+		t.Fatalf("unexpected calls: refresh=%d capabilities=%d", refreshCalls, capabilitiesCalls)
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	profile := cfg.Profiles["dev"]
+	if profile.AccessToken != "access-new" || profile.RefreshToken != "refresh-new" {
+		t.Fatalf("profile tokens were not refreshed: %#v", profile)
+	}
+	if !profile.ExpiresAt.After(time.Now().Add(30 * time.Minute)) {
+		t.Fatalf("profile expiry was not updated from expiresIn: %s", profile.ExpiresAt)
+	}
+	if profile.UserID != "u-2" || profile.UserName != "Grace" {
+		t.Fatalf("profile user was not updated: %#v", profile)
+	}
+	if profile.AIClientID != "profile-client" || profile.Source != "profile-source" {
+		t.Fatalf("profile context was not preserved: %#v", profile)
+	}
+}
+
 func TestExpiredProfileWithoutRefreshTokenFailsBeforeRequest(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,10 +21,30 @@ const (
 )
 
 type APIClient struct {
-	ServerURL string
-	Token     string
-	Client    *http.Client
-	Timeout   time.Duration
+	ServerURL    string
+	Token        string
+	RefreshToken string
+	Client       *http.Client
+	Timeout      time.Duration
+	authState    *apiClientAuthState
+	onRefresh    func(refreshResponse) error
+}
+
+type apiClientAuthState struct {
+	AccessToken  string
+	RefreshToken string
+}
+
+type httpStatusError struct {
+	Method     string
+	Path       string
+	Status     string
+	StatusCode int
+	Message    string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("%s %s failed: %s: %s", e.Method, e.Path, e.Status, e.Message)
 }
 
 type loginResponse = sohaapi.AuthResultEnvelope
@@ -512,44 +533,28 @@ func (c APIClient) doJSON(ctx context.Context, method, path, token string, heade
 	if base == "" {
 		return fmt.Errorf("server URL is required")
 	}
-	var reader io.Reader
+	var rawBody []byte
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		reader = bytes.NewReader(raw)
+		rawBody = raw
 	}
-	req, err := http.NewRequestWithContext(ctx, method, base+path, reader)
+	token = c.effectiveToken(token)
+	raw, err := c.doRawJSON(ctx, method, path, token, headers, rawBody)
 	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	for key, value := range headers {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			req.Header.Set(key, value)
+		var statusErr *httpStatusError
+		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized && token != "" && c.canRefresh() {
+			refreshedToken, refreshErr := c.refreshAfterUnauthorized(ctx)
+			if refreshErr != nil {
+				return fmt.Errorf("%w; refresh failed: %v", err, refreshErr)
+			}
+			raw, err = c.doRawJSON(ctx, method, path, refreshedToken, headers, rawBody)
 		}
-	}
-	client := c.httpClient()
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("%s %s request failed: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s failed: %s: %s", method, path, resp.Status, responseErrorMessage(resp.Status, raw))
+		if err != nil {
+			return err
+		}
 	}
 	if out == nil {
 		return nil
@@ -561,6 +566,93 @@ func (c APIClient) doJSON(ctx context.Context, method, path, token string, heade
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
+}
+
+func (c APIClient) doRawJSON(ctx context.Context, method, path, token string, headers map[string]string, rawBody []byte) ([]byte, error) {
+	var reader io.Reader
+	if rawBody != nil {
+		reader = bytes.NewReader(rawBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(strings.TrimSpace(c.ServerURL), "/")+path, reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", userAgent)
+	if rawBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for key, value := range headers {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			req.Header.Set(key, value)
+		}
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s request failed: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &httpStatusError{
+			Method:     method,
+			Path:       path,
+			Status:     resp.Status,
+			StatusCode: resp.StatusCode,
+			Message:    responseErrorMessage(resp.Status, raw),
+		}
+	}
+	return raw, nil
+}
+
+func (c APIClient) effectiveToken(token string) string {
+	if c.authState != nil && token == c.Token {
+		return strings.TrimSpace(c.authState.AccessToken)
+	}
+	return strings.TrimSpace(token)
+}
+
+func (c APIClient) currentRefreshToken() string {
+	if c.authState != nil && strings.TrimSpace(c.authState.RefreshToken) != "" {
+		return strings.TrimSpace(c.authState.RefreshToken)
+	}
+	return strings.TrimSpace(c.RefreshToken)
+}
+
+func (c APIClient) canRefresh() bool {
+	return c.currentRefreshToken() != ""
+}
+
+func (c APIClient) refreshAfterUnauthorized(ctx context.Context) (string, error) {
+	refreshToken := c.currentRefreshToken()
+	if refreshToken == "" {
+		return "", fmt.Errorf("refresh token is not configured")
+	}
+	result, err := (APIClient{ServerURL: c.ServerURL, Client: c.Client, Timeout: c.Timeout}).Refresh(ctx, refreshToken)
+	if err != nil {
+		return "", err
+	}
+	accessToken := strings.TrimSpace(result.Data.Tokens.AccessToken)
+	if accessToken == "" {
+		return "", fmt.Errorf("auth response did not include an access token")
+	}
+	if c.authState != nil {
+		c.authState.AccessToken = accessToken
+		c.authState.RefreshToken = firstNonEmptyString(result.Data.Tokens.RefreshToken, refreshToken)
+	}
+	if c.onRefresh != nil {
+		if err := c.onRefresh(result); err != nil {
+			return "", err
+		}
+	}
+	return accessToken, nil
 }
 
 func (c APIClient) httpClient() *http.Client {

@@ -53,53 +53,11 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 	}
 	cmd := args[0]
 	switch cmd {
-	case "version":
-		err = runVersion(args[1:], rt)
-	case "login":
-		err = runLogin(ctx, args[1:], rt)
-	case "capabilities":
-		err = runCapabilities(ctx, args[1:], rt)
-	case "tool":
-		err = runTool(ctx, args[1:], rt)
-	case "resource":
-		err = runResource(ctx, args[1:], rt)
-	case "prompt":
-		err = runPrompt(ctx, args[1:], rt)
-	case "token":
-		err = runToken(ctx, args[1:], rt)
-	case "service-account":
-		err = runServiceAccount(ctx, args[1:], rt)
-	case "audit":
-		err = runAudit(ctx, args[1:], rt)
-	case "approval":
-		err = runApproval(ctx, args[1:], rt)
-	case "governance":
-		err = runGovernance(ctx, args[1:], rt)
-	case "cloud":
-		err = runCloud(ctx, args[1:], rt)
-	case "profile":
-		err = runProfile(args[1:], rt)
-	case "context":
-		err = runContext(ctx, args[1:], rt)
-	case "mcp":
-		err = runMCP(ctx, args[1:], rt)
-	case "skill":
-		err = runSkill(args[1:], rt)
-	case "add":
-		err = runAdd(args[1:], rt)
-	case "plugin":
-		err = runPluginWithOutput(ctx, args[1:], rt)
-	case "diagnose":
-		err = runDiagnose(ctx, args[1:], rt)
-	case "completion":
-		err = runCompletion(args[1:], rt)
-	case "docs":
-		err = runDocs(args[1:], rt)
 	case "help", "-h", "--help":
 		printUsage(rt.Out)
 		return 0
 	default:
-		err = fmt.Errorf("unknown command %q", cmd)
+		err = dispatchTopLevelCommand(ctx, cmd, args[1:], rt)
 	}
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -118,76 +76,17 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --timeout <duration>  HTTP request timeout, e.g. 10s or 1m (default 30s)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Commands:")
-	fmt.Fprintln(out, "  version        Print build version information")
-	fmt.Fprintln(out, "  login          Authenticate and store a local profile")
-	fmt.Fprintln(out, "  capabilities   Print AI Gateway or platform capability metadata")
-	fmt.Fprintln(out, "  tool call      Invoke an AI Gateway tool with JSON input")
-	fmt.Fprintln(out, "  resource read  Read an AI Gateway MCP resource")
-	fmt.Fprintln(out, "  prompt get     Get an AI Gateway MCP prompt")
-	fmt.Fprintln(out, "  token          Manage personal access tokens")
-	fmt.Fprintln(out, "  service-account Manage AI Gateway service accounts and tokens")
-	fmt.Fprintln(out, "  audit list     Query AI Gateway audit logs")
-	fmt.Fprintln(out, "  approval       List, trace, or decide AI Gateway approval requests")
-	fmt.Fprintln(out, "  governance status Show AI Gateway governance health and metrics")
-	fmt.Fprintln(out, "  cloud fleet diagnostics Show Cloud managed agent fleet capability diagnostics")
-	fmt.Fprintln(out, "  profile        List, show, or switch profiles")
-	fmt.Fprintln(out, "  context        Show or update AI client context headers")
-	fmt.Fprintln(out, "  mcp start      Run the soha MCP stdio server")
-	fmt.Fprintln(out, "  mcp install    Print MCP client configuration")
-	fmt.Fprintln(out, "  skill list     List local soha AI Gateway skill files")
-	fmt.Fprintln(out, "  skill install  Install local soha AI Gateway skill files")
-	fmt.Fprintln(out, "  add            Add Soha MCP and skills to an AI agent or IDE")
-	fmt.Fprintln(out, "  plugin         Search, install, and manage Soha plugins")
-	fmt.Fprintln(out, "  diagnose       Check profile and Gateway connectivity")
-	fmt.Fprintln(out, "  completion     Print shell completion script")
-	fmt.Fprintln(out, "  docs           Generate CLI command reference documentation")
+	for _, spec := range topLevelCommandSpecs {
+		_, _ = fmt.Fprintf(out, "  %-15s %s\n", spec.Name, spec.Summary)
+	}
 }
 
 func printCommandHelp(command string, out io.Writer) bool {
-	switch command {
-	case "version":
-		fmt.Fprintln(out, "Usage: soha version [--json]")
-	case "capabilities":
-		fmt.Fprintln(out, "Usage: soha capabilities [--domain gateway|platform] [--output json|yaml|names|inputs]")
-	case "tool":
-		fmt.Fprintln(out, "Usage: soha tool call <name> [options]")
-	case "resource":
-		fmt.Fprintln(out, "Usage: soha resource read <uri> [options]")
-	case "prompt":
-		fmt.Fprintln(out, "Usage: soha prompt get <name> [options]")
-	case "token":
-		fmt.Fprintln(out, "Usage: soha token <list|create|revoke> [options]")
-	case "service-account":
-		fmt.Fprintln(out, "Usage: soha service-account <list|create|token-list|token-create|token-revoke> [options]")
-	case "audit":
-		fmt.Fprintln(out, "Usage: soha audit list [options]")
-	case "approval":
-		fmt.Fprintln(out, "Usage: soha approval <list|timeline|approve|reject|cancel> [options]")
-	case "governance":
-		fmt.Fprintln(out, "Usage: soha governance status [options]")
-	case "cloud":
-		fmt.Fprintln(out, "Usage: soha cloud fleet diagnostics [options]")
-	case "profile":
-		fmt.Fprintln(out, "Usage: soha profile <list|show|use> [options]")
-	case "context":
-		fmt.Fprintln(out, "Usage: soha context <show|set> [options]")
-	case "mcp":
-		fmt.Fprintln(out, "Usage: soha mcp <start|install> [options]")
-	case "skill":
-		fmt.Fprintln(out, "Usage: soha skill <list|install> [options]")
-	case "add":
-		fmt.Fprintln(out, "Usage: soha add [codex|claude|cursor|kiro|gemini|antigravity|antigravity-ide|trae|all] [options]")
-	case "plugin":
-		fmt.Fprintln(out, "Usage: soha plugin <search|show|install|list|enable|disable|upgrade|config|remove> [options]")
-	case "diagnose":
-		fmt.Fprintln(out, "Usage: soha diagnose [options]")
-	case "completion":
-		fmt.Fprintln(out, "Usage: soha completion [bash|zsh]")
-	case "docs":
-		fmt.Fprintln(out, "Usage: soha docs [--format markdown]")
-	default:
+	spec, ok := findTopLevelCommandSpec(command)
+	if !ok {
 		return false
 	}
+	_, _ = fmt.Fprintln(out, "Usage:", spec.Usage)
 	return true
 }
 
@@ -636,6 +535,9 @@ func loadRuntimeProfile(ctx context.Context, rt Runtime, requested string) (Conf
 	if strings.TrimSpace(profile.Source) == "" {
 		profile.Source = "soha"
 	}
+	profile.runtimeName = name
+	profile.refreshEnabled = token == "" && strings.TrimSpace(profile.RefreshToken) != ""
+	profile.refreshPersist = token == "" && server == ""
 	return cfg, name, profile, nil
 }
 
@@ -688,7 +590,46 @@ func tokenExpiresAt(expiresAt time.Time, expiresIn int64, now time.Time) time.Ti
 }
 
 func gatewayClient(rt Runtime, profile ProfileConfig) APIClient {
-	return APIClient{ServerURL: profile.ServerURL, Token: profile.AccessToken, Client: rt.HTTPClient, Timeout: rt.HTTPTimeout}
+	client := APIClient{
+		ServerURL:    profile.ServerURL,
+		Token:        profile.AccessToken,
+		RefreshToken: profile.RefreshToken,
+		Client:       rt.HTTPClient,
+		Timeout:      rt.HTTPTimeout,
+	}
+	if !profile.refreshEnabled {
+		return client
+	}
+	state := &apiClientAuthState{AccessToken: profile.AccessToken, RefreshToken: profile.RefreshToken}
+	client.authState = state
+	client.onRefresh = func(result refreshResponse) error {
+		updated, err := profileFromAuthResult(profile, result, time.Now())
+		if err != nil {
+			return err
+		}
+		profile.AccessToken = updated.AccessToken
+		profile.RefreshToken = updated.RefreshToken
+		profile.ExpiresAt = updated.ExpiresAt
+		profile.UserID = updated.UserID
+		profile.UserName = updated.UserName
+		if !profile.refreshPersist {
+			return nil
+		}
+		cfg, err := loadConfig(rt.ConfigPath)
+		if err != nil {
+			return err
+		}
+		name := profileName(firstNonEmptyString(profile.runtimeName, cfg.CurrentProfile))
+		stored := cfg.Profiles[name]
+		stored.AccessToken = updated.AccessToken
+		stored.RefreshToken = updated.RefreshToken
+		stored.ExpiresAt = updated.ExpiresAt
+		stored.UserID = updated.UserID
+		stored.UserName = updated.UserName
+		cfg.Profiles[name] = stored
+		return saveConfig(rt.ConfigPath, cfg)
+	}
+	return client
 }
 
 func gatewayHeaders(profile ProfileConfig, aiClientID, aiClientName, skillID, source string) map[string]string {

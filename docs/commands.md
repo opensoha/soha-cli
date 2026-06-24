@@ -45,6 +45,6 @@ Generated with `soha docs --format markdown`.
 | `plugin upgrade` | `soha plugin upgrade <plugin-id> [options]` | Upgrade an installed plugin. | `soha plugin upgrade opensoha.k8s-sre-pack` |
 | `plugin config` | `soha plugin config <plugin-id> [options]` | Configure metadata and secret refs. | `soha plugin config opensoha.k8s-sre-pack --secret-ref token=secret://k8s/token` |
 | `plugin remove` | `soha plugin remove <plugin-id> [options]` | Remove an installed plugin. | `soha plugin remove opensoha.k8s-sre-pack` |
-| `diagnose` | `soha diagnose [options]` | Check profile and Gateway visibility. | `soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime` |
+| `diagnose` | `soha diagnose [options]` | Check profile and Gateway connectivity. | `soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime` |
 | `completion` | `soha completion [bash\|zsh]` | Print shell completion script. | `soha completion bash`<br>`soha completion zsh` |
 | `docs` | `soha docs [--format markdown]` | Generate CLI command reference documentation. | `soha docs --format markdown` |

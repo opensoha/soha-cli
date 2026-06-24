@@ -10,22 +10,6 @@ import (
 	"strings"
 )
 
-func runPluginWithOutput(ctx context.Context, args []string, rt Runtime) error {
-	if len(args) == 0 {
-		return runPlugin(ctx, args, rt)
-	}
-	switch args[0] {
-	case "search":
-		return runPluginSearchWithOutput(ctx, args[1:], rt)
-	case "show":
-		return runPluginShowWithOutput(ctx, args[1:], rt)
-	case "list":
-		return runPluginListWithOutput(ctx, args[1:], rt)
-	default:
-		return runPlugin(ctx, args, rt)
-	}
-}
-
 func runPluginSearchWithOutput(ctx context.Context, args []string, rt Runtime) error {
 	fs := newRuntimeFlagSet("plugin search", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")

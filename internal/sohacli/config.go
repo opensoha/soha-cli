@@ -30,6 +30,10 @@ type ProfileConfig struct {
 	AIClientName string    `json:"aiClientName,omitempty"`
 	SkillID      string    `json:"skillId,omitempty"`
 	Source       string    `json:"source,omitempty"`
+
+	runtimeName    string `json:"-"`
+	refreshEnabled bool   `json:"-"`
+	refreshPersist bool   `json:"-"`
 }
 
 func defaultConfigPath() string {
