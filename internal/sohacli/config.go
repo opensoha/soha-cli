@@ -20,16 +20,18 @@ type Config struct {
 }
 
 type ProfileConfig struct {
-	ServerURL    string    `json:"serverUrl"`
-	AccessToken  string    `json:"accessToken,omitempty"`
-	RefreshToken string    `json:"refreshToken,omitempty"`
-	ExpiresAt    time.Time `json:"expiresAt,omitempty"`
-	UserID       string    `json:"userId,omitempty"`
-	UserName     string    `json:"userName,omitempty"`
-	AIClientID   string    `json:"aiClientId,omitempty"`
-	AIClientName string    `json:"aiClientName,omitempty"`
-	SkillID      string    `json:"skillId,omitempty"`
-	Source       string    `json:"source,omitempty"`
+	ServerURL           string    `json:"serverUrl"`
+	AccessToken         string    `json:"accessToken,omitempty"`
+	RefreshToken        string    `json:"refreshToken,omitempty"`
+	ExpiresAt           time.Time `json:"expiresAt,omitempty"`
+	UserID              string    `json:"userId,omitempty"`
+	UserName            string    `json:"userName,omitempty"`
+	AIClientID          string    `json:"aiClientId,omitempty"`
+	AIClientName        string    `json:"aiClientName,omitempty"`
+	SkillID             string    `json:"skillId,omitempty"`
+	Source              string    `json:"source,omitempty"`
+	MarketplaceURL      string    `json:"marketplaceUrl,omitempty"`
+	MarketplaceSourceID string    `json:"marketplaceSourceId,omitempty"`
 
 	runtimeName    string `json:"-"`
 	refreshEnabled bool   `json:"-"`

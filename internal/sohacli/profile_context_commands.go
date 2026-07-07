@@ -74,12 +74,14 @@ func runContext(_ context.Context, args []string, rt Runtime) error {
 			return err
 		}
 		return writePrettyJSON(rt.Out, map[string]any{
-			"profile":      name,
-			"serverUrl":    profile.ServerURL,
-			"aiClientId":   profile.AIClientID,
-			"aiClientName": profile.AIClientName,
-			"skillId":      profile.SkillID,
-			"source":       profile.Source,
+			"profile":             name,
+			"serverUrl":           profile.ServerURL,
+			"aiClientId":          profile.AIClientID,
+			"aiClientName":        profile.AIClientName,
+			"skillId":             profile.SkillID,
+			"source":              profile.Source,
+			"marketplaceUrl":      profile.MarketplaceURL,
+			"marketplaceSourceId": profile.MarketplaceSourceID,
 		})
 	case "set":
 		fs := newRuntimeFlagSet("context set", args[1:], rt)
@@ -88,6 +90,8 @@ func runContext(_ context.Context, args []string, rt Runtime) error {
 		aiClientName := fs.String("ai-client", "", "AI client display name")
 		skillID := fs.String("skill-id", "", "skill id")
 		source := fs.String("source", "", "request source label")
+		marketplace := fs.String("marketplace", "", "default marketplace catalog URL")
+		marketplaceSourceID := fs.String("marketplace-source-id", "", "default marketplace source id")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -106,6 +110,12 @@ func runContext(_ context.Context, args []string, rt Runtime) error {
 		}
 		if *source != "" {
 			profile.Source = strings.TrimSpace(*source)
+		}
+		if *marketplace != "" {
+			profile.MarketplaceURL = normalizeServerURL(*marketplace)
+		}
+		if *marketplaceSourceID != "" {
+			profile.MarketplaceSourceID = strings.TrimSpace(*marketplaceSourceID)
 		}
 		cfg.Profiles[name] = profile
 		if err := saveConfig(rt.ConfigPath, cfg); err != nil {

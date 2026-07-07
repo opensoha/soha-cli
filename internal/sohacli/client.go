@@ -445,9 +445,12 @@ func (c APIClient) ListMarketplacePlugins(ctx context.Context, query url.Values,
 	return out.Items, nil
 }
 
-func (c APIClient) GetMarketplacePlugin(ctx context.Context, pluginID string, headers map[string]string) (MarketplacePlugin, error) {
+func (c APIClient) GetMarketplacePlugin(ctx context.Context, pluginID string, query url.Values, headers map[string]string) (MarketplacePlugin, error) {
 	var out itemResponse[MarketplacePlugin]
 	path := "/api/v1/plugins/marketplace/" + url.PathEscape(strings.TrimSpace(pluginID))
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
 	if err := c.doJSON(ctx, http.MethodGet, path, c.Token, headers, nil, &out); err != nil {
 		return MarketplacePlugin{}, err
 	}

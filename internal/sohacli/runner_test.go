@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -464,7 +465,13 @@ func TestRunContextCommandsDoNotRefreshExpiredProfile(t *testing.T) {
 
 	var setOut bytes.Buffer
 	var setErr bytes.Buffer
-	code = Run(context.Background(), []string{"context", "set", "--profile", "dev", "--ai-client-id", "local-client"}, Runtime{
+	code = Run(context.Background(), []string{
+		"context", "set",
+		"--profile", "dev",
+		"--ai-client-id", "local-client",
+		"--marketplace", "marketplace.opensoha.com",
+		"--marketplace-source-id", "opensoha-official",
+	}, Runtime{
 		Out:        &setOut,
 		Err:        &setErr,
 		ConfigPath: configPath,
@@ -485,6 +492,9 @@ func TestRunContextCommandsDoNotRefreshExpiredProfile(t *testing.T) {
 	}
 	if profile.AIClientID != "local-client" || profile.Source != "soha" {
 		t.Fatalf("context set did not persist local context defaults: %#v", profile)
+	}
+	if profile.MarketplaceURL != "https://marketplace.opensoha.com" || profile.MarketplaceSourceID != "opensoha-official" {
+		t.Fatalf("context set did not persist marketplace defaults: %#v", profile)
 	}
 }
 
@@ -1369,6 +1379,94 @@ func TestRunPluginCommands(t *testing.T) {
 		paths["PUT /api/v1/plugins/opensoha.k8s-sre-pack/config"] != 1 ||
 		paths["DELETE /api/v1/plugins/opensoha.k8s-sre-pack"] != 1 {
 		t.Fatalf("unexpected plugin calls: %#v", paths)
+	}
+}
+
+func TestRunPluginMarketplaceSourceFlags(t *testing.T) {
+	var searchQuery url.Values
+	var showQuery url.Values
+	var installPayload map[string]any
+	var upgradePayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer profile-token" {
+			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/api/v1/plugins/marketplace":
+			searchQuery = r.URL.Query()
+			writeJSON(t, w, map[string]any{"items": []map[string]any{{
+				"id":        "opensoha.k8s-sre-pack",
+				"name":      "K8s SRE Pack",
+				"version":   "0.1.0",
+				"publisher": "opensoha",
+				"type":      "skill-pack",
+				"source":    "marketplace:opensoha/k8s-sre-pack",
+				"manifest":  pluginManifestFixture(),
+			}}})
+		case "/api/v1/plugins/marketplace/opensoha.k8s-sre-pack":
+			showQuery = r.URL.Query()
+			writeJSON(t, w, map[string]any{"data": sensitiveMarketplacePluginFixture()})
+		case "/api/v1/plugins/install":
+			if err := json.NewDecoder(r.Body).Decode(&installPayload); err != nil {
+				t.Fatalf("decode install: %v", err)
+			}
+			writeJSON(t, w, map[string]any{"data": installedPluginFixture("installed")})
+		case "/api/v1/plugins/opensoha.k8s-sre-pack/upgrade":
+			if err := json.NewDecoder(r.Body).Decode(&upgradePayload); err != nil {
+				t.Fatalf("decode upgrade: %v", err)
+			}
+			writeJSON(t, w, map[string]any{"data": installedPluginFixture("enabled")})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfigWithProfile(t, ProfileConfig{
+		ServerURL:           server.URL,
+		AccessToken:         "profile-token",
+		UserID:              "u-1",
+		UserName:            "Ada",
+		AIClientID:          "profile-client",
+		AIClientName:        "Codex",
+		SkillID:             "profile-skill",
+		Source:              "profile-source",
+		MarketplaceURL:      "https://profile.market.example/catalog",
+		MarketplaceSourceID: "profile-source-id",
+	})
+	commands := [][]string{
+		{"plugin", "search", "--profile", "dev", "--query", "k8s"},
+		{"plugin", "show", "--profile", "dev", "--marketplace", "https://flag.market.example/catalog", "--source-id", "flag-source", "--version", "0.2.0", "opensoha.k8s-sre-pack"},
+		{"plugin", "install", "--profile", "dev", "--version", "0.1.0", "opensoha.k8s-sre-pack"},
+		{"plugin", "upgrade", "--profile", "dev", "--marketplace", "https://flag.market.example/catalog", "--source-id", "flag-source", "--version", "0.2.0", "opensoha.k8s-sre-pack"},
+	}
+	for _, args := range commands {
+		var out bytes.Buffer
+		code := Run(context.Background(), args, Runtime{Out: &out, Err: &bytes.Buffer{}, ConfigPath: configPath})
+		if code != 0 {
+			t.Fatalf("%v returned %d with output %q", args, code, out.String())
+		}
+	}
+
+	if searchQuery.Get("marketplaceUrl") != "https://profile.market.example/catalog" ||
+		searchQuery.Get("sourceId") != "profile-source-id" ||
+		searchQuery.Get("q") != "k8s" {
+		t.Fatalf("unexpected marketplace search query: %s", searchQuery.Encode())
+	}
+	if showQuery.Get("marketplaceUrl") != "https://flag.market.example/catalog" ||
+		showQuery.Get("sourceId") != "flag-source" ||
+		showQuery.Get("version") != "0.2.0" {
+		t.Fatalf("unexpected marketplace show query: %s", showQuery.Encode())
+	}
+	if installPayload["marketplaceUrl"] != "https://profile.market.example/catalog" ||
+		installPayload["sourceId"] != "profile-source-id" ||
+		installPayload["version"] != "0.1.0" {
+		t.Fatalf("unexpected install payload: %#v", installPayload)
+	}
+	if upgradePayload["marketplaceUrl"] != "https://flag.market.example/catalog" ||
+		upgradePayload["sourceId"] != "flag-source" ||
+		upgradePayload["version"] != "0.2.0" {
+		t.Fatalf("unexpected upgrade payload: %#v", upgradePayload)
 	}
 }
 

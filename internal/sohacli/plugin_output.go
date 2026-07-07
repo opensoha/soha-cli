@@ -16,6 +16,9 @@ func runPluginSearchWithOutput(ctx context.Context, args []string, rt Runtime) e
 	queryFlag := fs.String("query", "", "search query")
 	typeFlag := fs.String("type", "", "plugin type")
 	publisherFlag := fs.String("publisher", "", "publisher id")
+	marketplace := fs.String("marketplace", "", "marketplace catalog URL")
+	sourceID := fs.String("source-id", "", "marketplace source id")
+	version := fs.String("version", "", "plugin version")
 	format := fs.String("output", "table", "output format: table, json, or yaml")
 	jsonOutput := fs.Bool("json", false, "print JSON output")
 	if err := fs.Parse(args); err != nil {
@@ -36,6 +39,7 @@ func runPluginSearchWithOutput(ctx context.Context, args []string, rt Runtime) e
 	setQuery(query, "q", firstNonEmptyString(*queryFlag, strings.Join(fs.Args(), " ")))
 	setQuery(query, "type", *typeFlag)
 	setQuery(query, "publisher", *publisherFlag)
+	applyMarketplaceQuery(query, profile, *marketplace, *sourceID, *version)
 	items, err := gatewayClient(rt, profile).ListMarketplacePlugins(ctx, query, gatewayHeaders(profile, "", "", "", "soha-cli"))
 	if err != nil {
 		return err
@@ -52,6 +56,9 @@ func runPluginShowWithOutput(ctx context.Context, args []string, rt Runtime) err
 	profileFlag := fs.String("profile", "", "profile name")
 	installed := fs.Bool("installed", false, "show installed plugin record instead of marketplace detail")
 	manifestOnly := fs.Bool("manifest", false, "show installed manifest snapshot")
+	marketplace := fs.String("marketplace", "", "marketplace catalog URL")
+	sourceID := fs.String("source-id", "", "marketplace source id")
+	version := fs.String("version", "", "plugin version")
 	format := fs.String("output", "table", "output format: table, json, or yaml")
 	jsonOutput := fs.Bool("json", false, "print JSON output")
 	if err := fs.Parse(args); err != nil {
@@ -98,7 +105,9 @@ func runPluginShowWithOutput(ctx context.Context, args []string, rt Runtime) err
 		printInstalledPluginTable(rt.Out, item)
 		return nil
 	}
-	item, err := client.GetMarketplacePlugin(ctx, pluginID, headers)
+	query := url.Values{}
+	applyMarketplaceQuery(query, profile, *marketplace, *sourceID, *version)
+	item, err := client.GetMarketplacePlugin(ctx, pluginID, query, headers)
 	if err != nil {
 		return err
 	}
@@ -147,6 +156,12 @@ func pluginOutputFlagSet(fs *flag.FlagSet) bool {
 		}
 	})
 	return set
+}
+
+func applyMarketplaceQuery(query url.Values, profile ProfileConfig, marketplaceURL, sourceID, version string) {
+	setQuery(query, "marketplaceUrl", normalizeServerURL(firstNonEmptyString(marketplaceURL, profile.MarketplaceURL)))
+	setQuery(query, "sourceId", firstNonEmptyString(sourceID, profile.MarketplaceSourceID))
+	setQuery(query, "version", version)
 }
 
 func printMarketplacePluginSearchTable(out io.Writer, items []MarketplacePlugin) {

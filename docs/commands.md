@@ -29,20 +29,20 @@ Generated with `soha docs --format markdown`.
 | `profile list` | `soha profile list` | List local profiles. | `soha profile list` |
 | `profile show` | `soha profile show [profile]` | Show one local profile with tokens redacted. | `soha profile show default` |
 | `profile use` | `soha profile use <profile>` | Switch the current profile. | `soha profile use cloud` |
-| `context show` | `soha context show [options]` | Show AI client context headers. | `soha context show` |
-| `context set` | `soha context set [options]` | Update AI client context headers. | `soha context set --skill-id k8s-sre --source codex` |
+| `context show` | `soha context show [options]` | Show AI client context headers and marketplace defaults. | `soha context show` |
+| `context set` | `soha context set [options]` | Update AI client context headers and marketplace defaults. | `soha context set --skill-id k8s-sre --source codex`<br>`soha context set --marketplace https://marketplace.opensoha.com --marketplace-source-id opensoha-official` |
 | `mcp start` | `soha mcp start [options]` | Run the Soha MCP stdio server. | `soha mcp start --profile default` |
 | `mcp install` | `soha mcp install [options]` | Print MCP client configuration. | `soha mcp install --command /usr/local/bin/soha` |
 | `skill list` | `soha skill list [options]` | List local Soha skill files. | `soha skill list --source ../soha-skills` |
 | `skill install` | `soha skill install [options] [skill-id...]` | Install local Soha skill files. | `soha skill install --source ../soha-skills --dest ~/.soha/skills k8s-sre` |
 | `add` | `soha add [target] [options]` | Add Soha MCP and skills to an AI agent or IDE. | `soha add --profile local --server http://localhost:8080 --source ../soha-skills`<br>`soha add claude --profile default --server https://mcp.opensoha.com --command /usr/local/bin/soha --source ../soha-skills` |
-| `plugin search` | `soha plugin search [options]` | Search plugin marketplace entries. | `soha plugin search --query k8s` |
-| `plugin show` | `soha plugin show [plugin-id] [options]` | Show marketplace, installed, or manifest details. | `soha plugin show opensoha.k8s-sre-pack --installed` |
-| `plugin install` | `soha plugin install [plugin-id] [options]` | Install a marketplace or manifest plugin. | `soha plugin install opensoha.k8s-sre-pack --enable` |
+| `plugin search` | `soha plugin search [options]` | Search plugin marketplace entries. | `soha plugin search --query k8s`<br>`soha plugin search --marketplace https://marketplace.opensoha.com --source-id opensoha-official` |
+| `plugin show` | `soha plugin show [options] <plugin-id>` | Show marketplace, installed, or manifest details. | `soha plugin show --installed opensoha.k8s-sre-pack`<br>`soha plugin show --marketplace https://marketplace.opensoha.com --version 0.1.0 opensoha.k8s-sre-pack` |
+| `plugin install` | `soha plugin install [options] [plugin-id]` | Install a marketplace or manifest plugin. | `soha plugin install --enable opensoha.k8s-sre-pack`<br>`soha plugin install --marketplace https://marketplace.opensoha.com --version 0.1.0 opensoha.k8s-sre-pack` |
 | `plugin list` | `soha plugin list [options]` | List installed plugins. | `soha plugin list` |
 | `plugin enable` | `soha plugin enable <plugin-id> [options]` | Enable an installed plugin. | `soha plugin enable opensoha.k8s-sre-pack` |
 | `plugin disable` | `soha plugin disable <plugin-id> [options]` | Disable an installed plugin. | `soha plugin disable opensoha.k8s-sre-pack` |
-| `plugin upgrade` | `soha plugin upgrade <plugin-id> [options]` | Upgrade an installed plugin. | `soha plugin upgrade opensoha.k8s-sre-pack` |
+| `plugin upgrade` | `soha plugin upgrade [options] <plugin-id>` | Upgrade an installed plugin. | `soha plugin upgrade opensoha.k8s-sre-pack`<br>`soha plugin upgrade --marketplace https://marketplace.opensoha.com --version 0.2.0 opensoha.k8s-sre-pack` |
 | `plugin config` | `soha plugin config <plugin-id> [options]` | Configure metadata and secret refs. | `soha plugin config opensoha.k8s-sre-pack --secret-ref token=secret://k8s/token` |
 | `plugin remove` | `soha plugin remove <plugin-id> [options]` | Remove an installed plugin. | `soha plugin remove opensoha.k8s-sre-pack` |
 | `diagnose` | `soha diagnose [options]` | Check profile and Gateway connectivity. | `soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime` |

@@ -42,17 +42,29 @@ func runPluginInstall(ctx context.Context, args []string, rt Runtime) error {
 	profileFlag := fs.String("profile", "", "profile name")
 	manifestPath := fs.String("manifest", "", "plugin manifest JSON file")
 	source := fs.String("source", "", "plugin source URL, path, or marketplace id")
+	marketplace := fs.String("marketplace", "", "marketplace catalog URL")
+	sourceID := fs.String("source-id", "", "marketplace source id")
+	version := fs.String("version", "", "plugin version")
 	expectedChecksum := fs.String("expected-checksum", "", "expected sha256:<hex> manifest checksum")
 	enable := fs.Bool("enable", false, "enable after install")
 	jsonOutput := fs.Bool("json", false, "print JSON output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	req, err := pluginInstallRequest(firstNonEmptyString(fs.Arg(0), *source), *source, *manifestPath, *expectedChecksum, *enable)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
-	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
+	req, err := pluginInstallRequest(pluginInstallOptions{
+		PluginID:         firstNonEmptyString(fs.Arg(0), *source),
+		Source:           *source,
+		ManifestPath:     *manifestPath,
+		ExpectedChecksum: *expectedChecksum,
+		Enable:           *enable,
+		MarketplaceURL:   firstNonEmptyString(*marketplace, profile.MarketplaceURL),
+		SourceID:         firstNonEmptyString(*sourceID, profile.MarketplaceSourceID),
+		Version:          *version,
+	})
 	if err != nil {
 		return err
 	}
@@ -113,6 +125,9 @@ func runPluginUpgrade(ctx context.Context, args []string, rt Runtime) error {
 	profileFlag := fs.String("profile", "", "profile name")
 	manifestPath := fs.String("manifest", "", "plugin manifest JSON file")
 	source := fs.String("source", "", "plugin source URL, path, or marketplace id")
+	marketplace := fs.String("marketplace", "", "marketplace catalog URL")
+	sourceID := fs.String("source-id", "", "marketplace source id")
+	version := fs.String("version", "", "plugin version")
 	expectedChecksum := fs.String("expected-checksum", "", "expected sha256:<hex> manifest checksum")
 	jsonOutput := fs.Bool("json", false, "print JSON output")
 	if err := fs.Parse(args); err != nil {
@@ -122,11 +137,19 @@ func runPluginUpgrade(ctx context.Context, args []string, rt Runtime) error {
 	if pluginID == "" {
 		return fmt.Errorf("plugin upgrade requires a plugin id")
 	}
-	req, err := pluginInstallRequest(pluginID, *source, *manifestPath, *expectedChecksum, false)
+	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
-	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
+	req, err := pluginInstallRequest(pluginInstallOptions{
+		PluginID:         pluginID,
+		Source:           *source,
+		ManifestPath:     *manifestPath,
+		ExpectedChecksum: *expectedChecksum,
+		MarketplaceURL:   firstNonEmptyString(*marketplace, profile.MarketplaceURL),
+		SourceID:         firstNonEmptyString(*sourceID, profile.MarketplaceSourceID),
+		Version:          *version,
+	})
 	if err != nil {
 		return err
 	}
@@ -211,15 +234,29 @@ func runPluginRemove(ctx context.Context, args []string, rt Runtime) error {
 	return nil
 }
 
-func pluginInstallRequest(pluginID, source, manifestPath, expectedChecksum string, enable bool) (PluginInstallRequest, error) {
+type pluginInstallOptions struct {
+	PluginID         string
+	Source           string
+	ManifestPath     string
+	ExpectedChecksum string
+	Enable           bool
+	MarketplaceURL   string
+	SourceID         string
+	Version          string
+}
+
+func pluginInstallRequest(options pluginInstallOptions) (PluginInstallRequest, error) {
 	req := PluginInstallRequest{
-		PluginID:         strings.TrimSpace(pluginID),
-		Source:           strings.TrimSpace(source),
-		ExpectedChecksum: strings.TrimSpace(expectedChecksum),
-		Enable:           enable,
+		PluginID:         strings.TrimSpace(options.PluginID),
+		Source:           strings.TrimSpace(options.Source),
+		ExpectedChecksum: strings.TrimSpace(options.ExpectedChecksum),
+		Enable:           options.Enable,
+		MarketplaceURL:   normalizeServerURL(options.MarketplaceURL),
+		SourceID:         strings.TrimSpace(options.SourceID),
+		Version:          strings.TrimSpace(options.Version),
 	}
-	if strings.TrimSpace(manifestPath) != "" {
-		manifest, err := readPluginManifest(manifestPath)
+	if strings.TrimSpace(options.ManifestPath) != "" {
+		manifest, err := readPluginManifest(options.ManifestPath)
 		if err != nil {
 			return PluginInstallRequest{}, err
 		}
