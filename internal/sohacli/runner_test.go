@@ -2688,6 +2688,67 @@ func TestMCPToolAnnotationsMapRiskHints(t *testing.T) {
 	}
 }
 
+func TestRunKnowledgeSearch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/ai/knowledge/search" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer profile-token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		if got := r.Header.Get("X-Soha-Skill-ID"); got != "knowledge-researcher" {
+			t.Fatalf("skill header = %q", got)
+		}
+		var input KnowledgeSearchRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if strings.Join(input.KnowledgeBaseIDs, ",") != "runbooks,handbook" || input.Query != "rollback" || input.TopK != 3 {
+			t.Fatalf("unexpected search input %#v", input)
+		}
+		if input.Filters == nil || strings.Join(input.Filters.SourceIDs, ",") != "git-main" {
+			t.Fatalf("unexpected filters %#v", input.Filters)
+		}
+		writeJSON(t, w, map[string]any{"data": map[string]any{
+			"query": "rollback", "candidateCount": 7, "timingMs": 12, "noAnswer": false, "traceId": "trace-1",
+			"hits": []map[string]any{{
+				"chunkId": "chunk-1", "documentId": "doc-1", "knowledgeBaseId": "runbooks", "title": "Rollback guide",
+				"content": "Use the verified rollback procedure.", "score": 0.92, "lexicalScore": 0.8, "vectorScore": 0.95,
+				"citation": map[string]any{"id": "citation:chunk-1", "knowledgeBaseId": "runbooks", "documentId": "doc-1", "documentTitle": "Rollback guide", "chunkId": "chunk-1", "location": map[string]any{"uri": "https://docs/runbook"}, "uri": "https://docs/runbook", "score": 0.92, "contentHash": "sha256:abc"},
+			}},
+			"citations": []map[string]any{{"id": "citation:chunk-1", "knowledgeBaseId": "runbooks", "documentId": "doc-1", "documentTitle": "Rollback guide", "chunkId": "chunk-1", "location": map[string]any{"uri": "https://docs/runbook"}, "uri": "https://docs/runbook", "score": 0.92, "contentHash": "sha256:abc"}},
+		}})
+	}))
+	defer server.Close()
+
+	var out, stderr bytes.Buffer
+	code := Run(context.Background(), []string{
+		"knowledge", "search", "--base-ids", "runbooks, handbook,runbooks", "--query", " rollback ",
+		"--top-k", "3", "--source-ids", "git-main", "--profile", "dev",
+	}, Runtime{Out: &out, Err: &stderr, ConfigPath: writeTestConfig(t, server.URL)})
+	if code != 0 {
+		t.Fatalf("knowledge search returned %d: %s", code, stderr.String())
+	}
+	for _, want := range []string{"trace: trace-1", "hits=1 candidates=7", "Rollback guide", "document=doc-1", "https://docs/runbook"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("summary missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestRunKnowledgeSearchValidatesRequiredFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"knowledge", "search", "--query", "rollback"},
+		{"knowledge", "search", "--base-ids", "runbooks"},
+		{"knowledge", "search", "--base-ids", "runbooks", "--query", "rollback", "--top-k", "51"},
+	} {
+		var stderr bytes.Buffer
+		if code := Run(context.Background(), args, Runtime{Out: &bytes.Buffer{}, Err: &stderr, ConfigPath: filepath.Join(t.TempDir(), "missing.json")}); code == 0 {
+			t.Fatalf("expected validation failure for %v", args)
+		}
+	}
+}
+
 func TestRunMCPInstallUsesCurrentProfile(t *testing.T) {
 	var out bytes.Buffer
 	code := Run(context.Background(), []string{

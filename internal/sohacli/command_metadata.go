@@ -70,6 +70,33 @@ var topLevelCommandSpecs = []commandSpec{
 		Handler: runResource,
 	},
 	{
+		Name:    "knowledge",
+		Usage:   "soha knowledge <search|connectors|sync|rebuild> [options]",
+		Summary: "Search and operate authorized AI knowledge pipelines",
+		Subcommands: []commandSpec{
+			{
+				Name:     "search",
+				Usage:    "soha knowledge search --base-ids <id[,id...]> --query <text> [options]",
+				Summary:  "Search authorized knowledge bases and return grounded evidence",
+				Examples: []string{"soha knowledge search --base-ids runbooks --query \"deployment rollback\"", "soha knowledge search --base-ids runbooks,handbook --query \"incident owner\" --output json"},
+			},
+			{Name: "connectors", Usage: "soha knowledge connectors <list|create|validate> [options]", Summary: "List, create, or validate external knowledge connectors", Examples: []string{"soha knowledge connectors list", "soha knowledge connectors create --base-id runbooks --name docs --kind http --config-ref secret:knowledge/docs --config-json '{\"url\":\"https://docs.example.com/\",\"allowedHosts\":[\"docs.example.com\"],\"maxBytes\":8388608}'", "soha knowledge connectors validate connector-1"}, CompletionWords: []string{"list", "create", "validate"}},
+			{Name: "sync", Usage: "soha knowledge sync <start|status|cancel|retry> [options]", Summary: "Start or control bounded knowledge synchronization jobs", Examples: []string{"soha knowledge sync start --base-id runbooks --source-id source-1", "soha knowledge sync status sync-1"}, CompletionWords: []string{"start", "status", "cancel", "retry"}},
+			{Name: "rebuild", Usage: "soha knowledge rebuild --base-id <id> [options]", Summary: "Start a bounded knowledge index rebuild", Examples: []string{"soha knowledge rebuild --base-id runbooks --reason \"embedding model update\""}},
+		},
+		Handler: runKnowledge,
+	},
+	{
+		Name:    "ai",
+		Usage:   "soha ai <evaluation|memory> [options]",
+		Summary: "Operate AI evaluation and governed memory workflows",
+		Subcommands: []commandSpec{
+			{Name: "evaluation", Usage: "soha ai evaluation <run|replay|gate> [options]", Summary: "Execute evaluation runs, isolated replay, or release gates", Examples: []string{"soha ai evaluation run --executor-profile-id executor-1 eval-run-1", "soha ai evaluation replay --id replay-1 --baseline-run-id baseline-1 --candidate-run-id candidate-1 --executor-profile-id executor-1", "soha ai evaluation gate --policy-id policy-1 --baseline-run-id baseline-1 --candidate-run-id candidate-1"}, CompletionWords: []string{"run", "replay", "gate"}},
+			{Name: "memory", Usage: "soha ai memory <inspect|delete> [options]", Summary: "Inspect or delete governed memory records", Examples: []string{"soha ai memory inspect --owner-type user --owner-id user-1", "soha ai memory delete memory-1"}, CompletionWords: []string{"inspect", "delete"}},
+		},
+		Handler: runAI,
+	},
+	{
 		Name:    "prompt",
 		Usage:   "soha prompt get <name> [options]",
 		Summary: "Get an AI Gateway MCP prompt",

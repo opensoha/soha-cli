@@ -139,6 +139,58 @@ type GovernanceFinding = sohaapi.GovernanceFinding
 
 type GovernanceRecommendationAction = sohaapi.GovernanceRecommendationAction
 
+type KnowledgeSearchFilters struct {
+	DocumentIDs []string `json:"documentIds,omitempty"`
+	SourceIDs   []string `json:"sourceIds,omitempty"`
+}
+
+type KnowledgeSearchRequest struct {
+	Filters          *KnowledgeSearchFilters `json:"filters,omitempty"`
+	KnowledgeBaseIDs []string                `json:"knowledgeBaseIds"`
+	Query            string                  `json:"query"`
+	TopK             int                     `json:"topK,omitempty"`
+}
+
+type KnowledgeSourceLocation struct {
+	EndByte   int    `json:"endByte,omitempty"`
+	StartByte int    `json:"startByte,omitempty"`
+	URI       string `json:"uri,omitempty"`
+}
+
+type KnowledgeCitation struct {
+	ChunkID         string                  `json:"chunkId"`
+	ContentHash     string                  `json:"contentHash"`
+	DocumentID      string                  `json:"documentId"`
+	DocumentTitle   string                  `json:"documentTitle"`
+	ID              string                  `json:"id"`
+	KnowledgeBaseID string                  `json:"knowledgeBaseId"`
+	Location        KnowledgeSourceLocation `json:"location"`
+	Score           float32                 `json:"score"`
+	URI             string                  `json:"uri,omitempty"`
+}
+
+type KnowledgeSearchHit struct {
+	ChunkID         string            `json:"chunkId"`
+	Citation        KnowledgeCitation `json:"citation"`
+	Content         string            `json:"content"`
+	DocumentID      string            `json:"documentId"`
+	KnowledgeBaseID string            `json:"knowledgeBaseId"`
+	LexicalScore    float32           `json:"lexicalScore"`
+	Score           float32           `json:"score"`
+	Title           string            `json:"title"`
+	VectorScore     float32           `json:"vectorScore"`
+}
+
+type KnowledgeSearchResult struct {
+	CandidateCount int                  `json:"candidateCount"`
+	Citations      []KnowledgeCitation  `json:"citations"`
+	Hits           []KnowledgeSearchHit `json:"hits"`
+	NoAnswer       bool                 `json:"noAnswer"`
+	Query          string               `json:"query"`
+	TimingMs       int64                `json:"timingMs"`
+	TraceID        string               `json:"traceId"`
+}
+
 type PluginManifest = sohaapi.PluginManifest
 
 type MarketplacePlugin = sohaapi.MarketplacePlugin
@@ -429,6 +481,14 @@ func (c APIClient) GovernanceStatus(ctx context.Context, windowHours int, header
 	}
 	if err := c.doJSON(ctx, http.MethodGet, path, c.Token, headers, nil, &out); err != nil {
 		return GovernanceStatus{}, err
+	}
+	return out.Data, nil
+}
+
+func (c APIClient) SearchKnowledge(ctx context.Context, input KnowledgeSearchRequest, headers map[string]string) (KnowledgeSearchResult, error) {
+	var out itemResponse[KnowledgeSearchResult]
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/ai/knowledge/search", c.Token, headers, input, &out); err != nil {
+		return KnowledgeSearchResult{}, err
 	}
 	return out.Data, nil
 }
