@@ -4,6 +4,7 @@
 /soha
 /bin/
 /dist/
+/graphify-out/
 *.test
 *.out
 
