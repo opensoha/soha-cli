@@ -1,4 +1,4 @@
-IMAGE_REPOSITORY ?= yshanchui/soha-cli
+IMAGE_REPOSITORY ?= ghcr.io/opensoha/soha-cli
 IMAGE_TAG ?= local
 IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
 GOPROXY ?= https://proxy.golang.org,direct

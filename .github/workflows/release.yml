@@ -143,11 +143,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Login to Docker Hub
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -156,8 +157,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            yshanchui/soha-cli:${{ github.ref_name }}
-            yshanchui/soha-cli:latest
+            ghcr.io/opensoha/soha-cli:${{ github.ref_name }}
+            ghcr.io/opensoha/soha-cli:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}

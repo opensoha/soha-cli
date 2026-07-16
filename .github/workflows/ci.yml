@@ -40,4 +40,4 @@ jobs:
       - name: Build
         run: GOWORK=off CGO_ENABLED=0 go build -o /tmp/soha ./cmd/soha
       - name: Docker build
-        run: docker build -f Dockerfile -t yshanchui/soha-cli:test .
+        run: docker build -f Dockerfile -t ghcr.io/opensoha/soha-cli:test .
