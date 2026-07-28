@@ -1,4 +1,4 @@
 interface:
   display_name: "Soha CLI"
-  short_description: "Soha command-line client development rules"
-  default_prompt: "Use $soha-cli to implement or review Soha CLI command changes."
+  short_description: "CLI commands, profiles, contracts, and packaging"
+  default_prompt: "Use $soha-cli to implement or review a Soha CLI change."

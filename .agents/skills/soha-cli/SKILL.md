@@ -7,7 +7,8 @@ description: >-
   flags, completion entries, generated command docs, profile or token handling,
   auth refresh behavior, AI Gateway tool/resource/prompt calls, MCP stdio
   support, `soha add` agent/IDE integration, local skill installation,
-  plugin marketplace commands, cloud diagnostics, or CLI packaging. This skill
+  plugin marketplace commands, AI platform knowledge/evaluation/runtime
+  commands, cloud diagnostics, or CLI packaging. This skill
   enforces stdlib `flag` command patterns, `Runtime` I/O injection, safe local
   profile storage, redacted output, released `soha-contracts` compatibility,
   and no imports from the core `soha` repository internals.
@@ -24,10 +25,10 @@ types and local HTTP calls. It should remain testable without a real server.
 ## Workflow
 
 1. Read `internal/sohacli/command_metadata.go` before command changes. Command help, docs, completion hints, and dispatch all flow from this metadata.
-2. Add command behavior in the smallest existing file that owns the domain: profiles/context, MCP, skills, plugins, governance, cloud diagnostics, tokens, service accounts, or gateway tool/resource/prompt calls.
+2. Add command behavior in the smallest existing owner: profiles/context, MCP, skills, plugins, governance, AI platform/knowledge/evaluation, cloud diagnostics, tokens, service accounts, or Gateway calls.
 3. Keep the `Run(ctx, args, Runtime)` boundary. Use `Runtime.In`, `Runtime.Out`, `Runtime.Err`, `Runtime.ConfigPath`, and injectable HTTP clients in tests; do not write directly to `os.Stdout` or `os.Stderr` outside `cmd/soha/main.go`.
 4. Use stdlib `flag` plus `newRuntimeFlagSet`. Return errors from handlers and let `Run` map them to exit codes.
-5. Use `APIClient` and contracts DTOs for HTTP work. Do not import `github.com/opensoha/soha/internal/**` or sibling checkout internals.
+5. Use `APIClient`, the focused AI platform client, and contracts DTOs for HTTP work. Do not import `github.com/opensoha/soha/internal/**` or sibling checkout internals.
 6. Keep the committed `go.mod` on a released `soha-contracts` tag. Use temporary local `go.work` only for unreleased multi-repo contract work.
 7. When command surface changes, update `topLevelCommandSpecs`, completion words where relevant, and regenerate `docs/commands.md` with `go run ./cmd/soha docs --format markdown > docs/commands.md`.
 
