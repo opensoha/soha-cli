@@ -10,10 +10,17 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+)
+
+var (
+	sensitiveAuthorizationTextPattern = regexp.MustCompile(`(?i)(["']?)(authorization)(["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|Bearer\s+[^\s,;]+|[^\s,;]+)`)
+	sensitiveAssignmentTextPattern    = regexp.MustCompile(`(?i)(["']?)(token|password|passwd|secret|api[_-]?key)(["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
+	bearerCredentialTextPattern       = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`)
 )
 
 type Runtime struct {
@@ -1137,18 +1144,9 @@ func redactSensitiveText(value string) string {
 	if value == "" {
 		return value
 	}
-	replacements := []string{"token=", "password=", "passwd=", "secret=", "authorization=", "api_key=", "apikey="}
-	lower := strings.ToLower(value)
-	for _, marker := range replacements {
-		if index := strings.Index(lower, marker); index >= 0 {
-			end := index + len(marker)
-			tail := value[end:]
-			if stop := strings.IndexAny(tail, " \t\n,;"); stop >= 0 {
-				return value[:end] + "[REDACTED]" + tail[stop:]
-			}
-			return value[:end] + "[REDACTED]"
-		}
-	}
+	value = sensitiveAuthorizationTextPattern.ReplaceAllString(value, `$1$2$3[REDACTED]`)
+	value = sensitiveAssignmentTextPattern.ReplaceAllString(value, `$1$2$3[REDACTED]`)
+	value = bearerCredentialTextPattern.ReplaceAllString(value, "Bearer [REDACTED]")
 	return value
 }
 

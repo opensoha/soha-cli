@@ -1,34 +1,23 @@
 package sohacli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type rpcMessage struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  any             `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
-
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
+const mcpBackendErrorCode int64 = -32000
 
 func runMCP(ctx context.Context, args []string, rt Runtime) error {
 	if len(args) == 0 {
-		return fmt.Errorf("mcp requires a subcommand: start or install")
+		return runMCPStart(ctx, nil, rt)
 	}
 	switch args[0] {
 	case "start":
@@ -36,20 +25,25 @@ func runMCP(ctx context.Context, args []string, rt Runtime) error {
 	case "install":
 		return runMCPInstall(args[1:], rt)
 	default:
+		if strings.HasPrefix(strings.TrimSpace(args[0]), "-") {
+			return runMCPStart(ctx, args, rt)
+		}
 		return fmt.Errorf("unknown mcp command %q", args[0])
 	}
 }
 
 func runMCPStart(ctx context.Context, args []string, rt Runtime) error {
-	fs := newRuntimeFlagSet("mcp start", args, rt)
+	fs := newRuntimeFlagSet("mcp", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
+	baseURL := fs.String("base-url", "", "Soha server URL; defaults to the current profile or official SaaS")
+	serverAlias := fs.String("server", "", "alias for --base-url")
 	aiClientID := fs.String("ai-client-id", "", "override AI client id")
 	aiClientName := fs.String("ai-client", "", "override AI client display name")
 	skillID := fs.String("skill-id", "", "override skill id")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	_, _, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
+	profile, err := loadMCPRuntimeProfile(ctx, rt, *profileFlag, *baseURL, *serverAlias)
 	if err != nil {
 		return err
 	}
@@ -59,20 +53,63 @@ func runMCPStart(ctx context.Context, args []string, rt Runtime) error {
 		headers: headers,
 		in:      rt.In,
 		out:     rt.Out,
-		err:     rt.Err,
 	}
 	return server.serve(ctx)
+}
+
+func loadMCPRuntimeProfile(ctx context.Context, rt Runtime, requested, baseURL, serverAlias string) (ProfileConfig, error) {
+	if normalizeServerURL(baseURL) != "" && normalizeServerURL(serverAlias) != "" && normalizeServerURL(baseURL) != normalizeServerURL(serverAlias) {
+		return ProfileConfig{}, fmt.Errorf("--base-url and --server must refer to the same server when both are set")
+	}
+	cfg, err := loadConfig(rt.ConfigPath)
+	if err != nil {
+		return ProfileConfig{}, err
+	}
+	name := profileName(firstNonEmptyString(requested, cfg.CurrentProfile))
+	profile, configured := cfg.Profiles[name]
+	explicitServer := normalizeServerURL(firstNonEmptyString(baseURL, serverAlias, env("SOHA_SERVER")))
+	if configured && explicitServer == "" && env("SOHA_TOKEN") == "" && normalizeServerURL(profile.ServerURL) != "" && normalizeServerURL(profile.ServerURL) != defaultServerURL {
+		return ProfileConfig{}, fmt.Errorf("profile %q targets %s; pass --base-url %s to use that self-hosted deployment", name, profile.ServerURL, normalizeServerURL(profile.ServerURL))
+	}
+	if configured {
+		_, _, profile, err = loadRuntimeProfile(ctx, rt, name)
+		if err != nil {
+			return ProfileConfig{}, err
+		}
+	} else {
+		if strings.TrimSpace(requested) != "" {
+			return ProfileConfig{}, fmt.Errorf("profile %q is not configured; run soha login first", name)
+		}
+		profile = ProfileConfig{
+			AccessToken: strings.TrimSpace(env("SOHA_TOKEN")),
+			Source:      "soha",
+			runtimeName: name,
+		}
+		if profile.AccessToken == "" {
+			return ProfileConfig{}, fmt.Errorf("profile %q is not configured and SOHA_TOKEN is empty; run soha login or set SOHA_TOKEN", name)
+		}
+	}
+	profile.ServerURL = normalizeServerURL(firstNonEmptyString(explicitServer, defaultServerURL))
+	if profile.ServerURL == "" {
+		profile.ServerURL = defaultServerURL
+	}
+	return profile, nil
 }
 
 func runMCPInstall(args []string, rt Runtime) error {
 	fs := newRuntimeFlagSet("mcp install", args, rt)
 	profile := fs.String("profile", "", "profile name")
+	baseURL := fs.String("base-url", "", "Soha server URL for a self-hosted deployment")
+	serverAlias := fs.String("server", "", "alias for --base-url")
 	command := fs.String("command", "soha", "soha executable path")
 	aiClientID := fs.String("ai-client-id", "", "AI client id to include in generated args")
 	aiClientName := fs.String("ai-client", "", "AI client display name to include in generated args")
 	skillID := fs.String("skill-id", "", "skill id to include in generated args")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if normalizeServerURL(*baseURL) != "" && normalizeServerURL(*serverAlias) != "" && normalizeServerURL(*baseURL) != normalizeServerURL(*serverAlias) {
+		return fmt.Errorf("--base-url and --server must refer to the same server when both are set")
 	}
 	profileNameValue := strings.TrimSpace(*profile)
 	if profileNameValue == "" {
@@ -82,19 +119,38 @@ func runMCPInstall(args []string, rt Runtime) error {
 		}
 		profileNameValue = cfg.CurrentProfile
 	}
+	effectiveBaseURL := firstNonEmptyString(*baseURL, *serverAlias)
+	if strings.TrimSpace(effectiveBaseURL) == "" {
+		cfg, err := loadConfig(rt.ConfigPath)
+		if err != nil {
+			return err
+		}
+		if profileConfig, ok := cfg.Profiles[profileName(profileNameValue)]; ok && normalizeServerURL(profileConfig.ServerURL) != defaultServerURL {
+			effectiveBaseURL = profileConfig.ServerURL
+		}
+	}
 	config := map[string]any{
 		"mcpServers": map[string]any{
 			"soha": map[string]any{
 				"command": *command,
-				"args":    mcpInstallArgs(profileName(profileNameValue), *aiClientID, *aiClientName, *skillID),
+				"args": mcpInstallArgs(
+					profileName(profileNameValue),
+					effectiveBaseURL,
+					*aiClientID,
+					*aiClientName,
+					*skillID,
+				),
 			},
 		},
 	}
 	return writePrettyJSON(rt.Out, config)
 }
 
-func mcpInstallArgs(profileNameValue, aiClientID, aiClientName, skillID string) []string {
-	args := []string{"mcp", "start", "--profile", profileNameValue}
+func mcpInstallArgs(profileNameValue, baseURL, aiClientID, aiClientName, skillID string) []string {
+	args := []string{"mcp", "--profile", profileNameValue}
+	if strings.TrimSpace(baseURL) != "" {
+		args = append(args, "--base-url", normalizeServerURL(baseURL))
+	}
 	if strings.TrimSpace(aiClientID) != "" {
 		args = append(args, "--ai-client-id", strings.TrimSpace(aiClientID))
 	}
@@ -112,202 +168,143 @@ type mcpServer struct {
 	headers map[string]string
 	in      io.Reader
 	out     io.Writer
-	err     io.Writer
 }
 
 func (s mcpServer) serve(ctx context.Context) error {
-	reader := bufio.NewReader(s.in)
-	for {
-		msg, err := readRPCMessage(reader)
-		if err != nil {
-			if err == io.EOF {
-				return nil
+	manifest, err := s.client.Capabilities(ctx, s.headers)
+	if err != nil {
+		return fmt.Errorf("load MCP capabilities: %s", redactSensitiveText(err.Error()))
+	}
+	server := mcpsdk.NewServer(
+		&mcpsdk.Implementation{Name: "soha", Version: BuildInfo().Version},
+		&mcpsdk.ServerOptions{
+			Instructions: mcpInstructions(),
+			Capabilities: &mcpsdk.ServerCapabilities{},
+		},
+	)
+	for _, item := range manifest.Tools {
+		if err := s.addTool(server, item); err != nil {
+			return err
+		}
+	}
+	for _, item := range manifest.Resources {
+		s.addResource(server, item)
+	}
+	for _, item := range manifest.Prompts {
+		s.addPrompt(server, item)
+	}
+	err = server.Run(ctx, &mcpsdk.IOTransport{
+		Reader: io.NopCloser(s.in),
+		Writer: nopWriteCloser{s.out},
+	})
+	if err != nil && strings.HasSuffix(err.Error(), ": EOF") {
+		return nil
+	}
+	return err
+}
+
+func (s mcpServer) addTool(server *mcpsdk.Server, item ToolCapability) error {
+	inputSchema := item.InputSchema
+	if inputSchema == nil {
+		inputSchema = map[string]any{"type": "object", "additionalProperties": true}
+	}
+	if schemaType, _ := inputSchema["type"].(string); schemaType != "object" {
+		return fmt.Errorf("MCP tool %q input schema must have type object", item.Name)
+	}
+	tool := &mcpsdk.Tool{
+		Name:        item.Name,
+		Title:       strings.TrimSpace(item.Title),
+		Description: toolDescription(item),
+		InputSchema: inputSchema,
+		Meta:        mcpsdk.Meta(mcpSohaToolMeta(item)),
+		Annotations: mcpSDKToolAnnotations(item),
+	}
+	if len(item.OutputSchema) > 0 {
+		tool.OutputSchema = item.OutputSchema
+	}
+	server.AddTool(tool, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		arguments := map[string]any{}
+		if len(req.Params.Arguments) > 0 {
+			if err := json.Unmarshal(req.Params.Arguments, &arguments); err != nil {
+				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "invalid tool arguments"}
 			}
-			return err
 		}
-		if msg.ID == nil && strings.HasPrefix(msg.Method, "notifications/") {
-			continue
+		result, err := s.client.InvokeTool(ctx, item.Name, arguments, s.headers)
+		if err != nil {
+			return mcpTextResult(redactSensitiveText(err.Error()), true), nil
 		}
-		resp := s.handle(ctx, msg)
-		if msg.ID == nil {
-			continue
+		raw, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return nil, mcpBackendError(err)
 		}
-		if err := writeRPCMessage(s.out, resp); err != nil {
-			return err
-		}
-	}
+		return mcpTextResult(string(raw), false), nil
+	})
+	return nil
 }
 
-func (s mcpServer) handle(ctx context.Context, msg rpcMessage) rpcMessage {
-	resp := rpcMessage{JSONRPC: "2.0", ID: msg.ID}
-	switch msg.Method {
-	case "initialize":
-		resp.Result = map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities": map[string]any{
-				"tools":     map[string]any{},
-				"resources": map[string]any{},
-				"prompts":   map[string]any{},
-			},
-			"serverInfo":   map[string]any{"name": "soha", "version": BuildInfo().Version},
-			"instructions": mcpInstructions(),
-		}
-	case "tools/list":
-		manifest, err := s.client.Capabilities(ctx, s.headers)
-		if err != nil {
-			resp.Error = &rpcError{Code: -32000, Message: err.Error()}
-			return resp
-		}
-		resp.Result = map[string]any{"tools": mcpTools(manifest.Tools)}
-	case "tools/call":
-		var params struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if err := json.Unmarshal(msg.Params, &params); err != nil {
-			resp.Error = &rpcError{Code: -32602, Message: "invalid tools/call params"}
-			return resp
-		}
-		if strings.TrimSpace(params.Name) == "" {
-			resp.Error = &rpcError{Code: -32602, Message: "tools/call requires name"}
-			return resp
-		}
-		result, err := s.client.InvokeTool(ctx, params.Name, params.Arguments, s.headers)
-		if err != nil {
-			resp.Result = mcpTextResult(err.Error(), true)
-			return resp
-		}
-		raw, _ := json.MarshalIndent(result, "", "  ")
-		resp.Result = mcpTextResult(string(raw), false)
-	case "resources/list":
-		manifest, err := s.client.Capabilities(ctx, s.headers)
-		if err != nil {
-			resp.Error = &rpcError{Code: -32000, Message: err.Error()}
-			return resp
-		}
-		resp.Result = map[string]any{"resources": mcpResources(manifest.Resources)}
-	case "resources/read":
-		var params struct {
-			URI     string         `json:"uri"`
-			Name    string         `json:"name"`
-			Context map[string]any `json:"context"`
-		}
-		if err := json.Unmarshal(msg.Params, &params); err != nil {
-			resp.Error = &rpcError{Code: -32602, Message: "invalid resources/read params"}
-			return resp
-		}
-		resourceName := firstNonEmptyString(params.URI, params.Name)
-		if strings.TrimSpace(resourceName) == "" {
-			resp.Error = &rpcError{Code: -32602, Message: "resources/read requires uri or name"}
-			return resp
-		}
-		result, err := s.client.ReadResource(ctx, resourceName, params.Context, s.headers)
-		if err != nil {
-			resp.Error = &rpcError{Code: -32000, Message: err.Error()}
-			return resp
-		}
-		resp.Result = mcpResourceReadResult(result)
-	case "prompts/list":
-		manifest, err := s.client.Capabilities(ctx, s.headers)
-		if err != nil {
-			resp.Error = &rpcError{Code: -32000, Message: err.Error()}
-			return resp
-		}
-		resp.Result = map[string]any{"prompts": mcpPrompts(manifest.Prompts)}
-	case "prompts/get":
-		var params struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-			Context   map[string]any `json:"context"`
-		}
-		if err := json.Unmarshal(msg.Params, &params); err != nil {
-			resp.Error = &rpcError{Code: -32602, Message: "invalid prompts/get params"}
-			return resp
-		}
-		if strings.TrimSpace(params.Name) == "" {
-			resp.Error = &rpcError{Code: -32602, Message: "prompts/get requires name"}
-			return resp
-		}
-		result, err := s.client.GetPrompt(ctx, params.Name, params.Arguments, params.Context, s.headers)
-		if err != nil {
-			resp.Error = &rpcError{Code: -32000, Message: err.Error()}
-			return resp
-		}
-		resp.Result = map[string]any{
-			"description": result.Description,
-			"messages":    mcpPromptMessages(result.Messages),
-		}
-	default:
-		resp.Error = &rpcError{Code: -32601, Message: "method not found: " + msg.Method}
+func (s mcpServer) addResource(server *mcpsdk.Server, item ResourceCapability) {
+	meta := mcpSohaCapabilityMeta(item.PermissionKeys, item.RequiredScopes)
+	if len(item.ContextSchema) > 0 {
+		meta = withSohaMeta(meta, "contextSchema", item.ContextSchema)
 	}
-	return resp
+	server.AddResource(&mcpsdk.Resource{
+		URI:         item.Name,
+		Name:        item.Name,
+		Description: item.Description,
+		Meta:        mcpsdk.Meta(meta),
+	}, func(ctx context.Context, req *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
+		result, err := s.client.ReadResource(ctx, req.Params.URI, mcpContext(req.Params.Meta), s.headers)
+		if err != nil {
+			return nil, mcpBackendError(err)
+		}
+		return mcpResourceReadResult(result), nil
+	})
 }
 
-func mcpTools(items []ToolCapability) []map[string]any {
-	out := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		inputSchema := item.InputSchema
-		if inputSchema == nil {
-			inputSchema = map[string]any{"type": "object", "additionalProperties": true}
-		}
-		tool := map[string]any{
-			"name":        item.Name,
-			"description": toolDescription(item),
-			"inputSchema": inputSchema,
-			"annotations": mcpToolAnnotations(item),
-		}
-		if len(item.OutputSchema) > 0 {
-			tool["outputSchema"] = item.OutputSchema
-		}
-		if meta := mcpSohaToolMeta(item); meta != nil {
-			tool["_meta"] = meta
-		}
-		out = append(out, tool)
+func (s mcpServer) addPrompt(server *mcpsdk.Server, item PromptCapability) {
+	meta := mcpSohaCapabilityMeta(item.PermissionKeys, item.RequiredScopes)
+	if len(item.ArgumentSchema) > 0 {
+		meta = withSohaMeta(meta, "argumentSchema", item.ArgumentSchema)
 	}
-	return out
+	if len(item.ContextSchema) > 0 {
+		meta = withSohaMeta(meta, "contextSchema", item.ContextSchema)
+	}
+	server.AddPrompt(&mcpsdk.Prompt{
+		Name:        item.Name,
+		Description: item.Description,
+		Arguments:   mcpSDKPromptArguments(item.ArgumentSchema),
+		Meta:        mcpsdk.Meta(meta),
+	}, func(ctx context.Context, req *mcpsdk.GetPromptRequest) (*mcpsdk.GetPromptResult, error) {
+		arguments := make(map[string]any, len(req.Params.Arguments))
+		for name, value := range req.Params.Arguments {
+			arguments[name] = value
+		}
+		result, err := s.client.GetPrompt(ctx, item.Name, arguments, mcpContext(req.Params.Meta), s.headers)
+		if err != nil {
+			return nil, mcpBackendError(err)
+		}
+		return &mcpsdk.GetPromptResult{
+			Description: result.Description,
+			Messages:    mcpPromptMessages(result.Messages),
+		}, nil
+	})
 }
 
 func mcpInstructions() string {
 	return "soha MCP is a Gateway proxy. Tools, resources, and prompts are listed from the AI Gateway manifest, and calls/read/get requests are sent back to soha AI Gateway for permission checks, skill bindings, AI client context, redaction, risk policy, approval, and audit. This local MCP process does not access PostgreSQL, Kubernetes, runner workspaces, kubeconfigs, Docker, or privileged prompt/resource content directly."
 }
 
-func mcpResources(items []ResourceCapability) []map[string]any {
-	out := make([]map[string]any, 0, len(items))
+func mcpSDKPromptArguments(schema map[string]any) []*mcpsdk.PromptArgument {
+	items := mcpPromptArguments(schema)
+	out := make([]*mcpsdk.PromptArgument, 0, len(items))
 	for _, item := range items {
-		resource := map[string]any{
-			"uri":         item.Name,
-			"name":        item.Name,
-			"description": item.Description,
-		}
-		if len(item.ContextSchema) > 0 {
-			resource["contextSchema"] = item.ContextSchema
-		}
-		if meta := mcpSohaCapabilityMeta(item.PermissionKeys, item.RequiredScopes); meta != nil {
-			resource["_meta"] = meta
-		}
-		out = append(out, resource)
-	}
-	return out
-}
-
-func mcpPrompts(items []PromptCapability) []map[string]any {
-	out := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		prompt := map[string]any{
-			"name":        item.Name,
-			"description": item.Description,
-		}
-		if len(item.ArgumentSchema) > 0 {
-			prompt["argumentSchema"] = item.ArgumentSchema
-			prompt["arguments"] = mcpPromptArguments(item.ArgumentSchema)
-		}
-		if len(item.ContextSchema) > 0 {
-			prompt["contextSchema"] = item.ContextSchema
-		}
-		if meta := mcpSohaCapabilityMeta(item.PermissionKeys, item.RequiredScopes); meta != nil {
-			prompt["_meta"] = meta
-		}
-		out = append(out, prompt)
+		description, _ := item["description"].(string)
+		required, _ := item["required"].(bool)
+		out = append(out, &mcpsdk.PromptArgument{
+			Name:        item["name"].(string),
+			Description: description,
+			Required:    required,
+		})
 	}
 	return out
 }
@@ -330,10 +327,7 @@ func mcpPromptArguments(schema map[string]any) []map[string]any {
 	sort.Strings(names)
 	out := make([]map[string]any, 0, len(names))
 	for _, name := range names {
-		item := map[string]any{
-			"name":     name,
-			"required": required[name],
-		}
+		item := map[string]any{"name": name, "required": required[name]}
 		if property, _ := properties[name].(map[string]any); len(property) > 0 {
 			if description, _ := property["description"].(string); strings.TrimSpace(description) != "" {
 				item["description"] = strings.TrimSpace(description)
@@ -358,6 +352,16 @@ func mcpSohaCapabilityMeta(permissionKeys, requiredScopes []string) map[string]a
 	return map[string]any{"soha": soha}
 }
 
+func withSohaMeta(meta map[string]any, key string, value any) map[string]any {
+	if meta == nil {
+		meta = map[string]any{"soha": map[string]any{}}
+	}
+	soha, _ := meta["soha"].(map[string]any)
+	soha[key] = value
+	meta["soha"] = soha
+	return meta
+}
+
 func mcpSohaToolMeta(item ToolCapability) map[string]any {
 	meta := mcpSohaCapabilityMeta(item.PermissionKeys, item.RequiredScopes)
 	if meta == nil {
@@ -380,24 +384,36 @@ func mcpSohaToolMeta(item ToolCapability) map[string]any {
 		soha["riskLevel"] = item.RiskLevel
 	}
 	soha["requiresApproval"] = item.RequiresApproval
-	if len(soha) == 0 {
-		return nil
-	}
 	return meta
+}
+
+func mcpSDKToolAnnotations(item ToolCapability) *mcpsdk.ToolAnnotations {
+	annotations := mcpToolAnnotations(item)
+	readOnly, _ := annotations["readOnlyHint"].(bool)
+	destructive, _ := annotations["destructiveHint"].(bool)
+	idempotent, _ := annotations["idempotentHint"].(bool)
+	openWorld, _ := annotations["openWorldHint"].(bool)
+	title, _ := annotations["title"].(string)
+	return &mcpsdk.ToolAnnotations{
+		Title:           title,
+		ReadOnlyHint:    readOnly,
+		DestructiveHint: &destructive,
+		IdempotentHint:  idempotent,
+		OpenWorldHint:   &openWorld,
+	}
 }
 
 func mcpToolAnnotations(item ToolCapability) map[string]any {
 	riskLevel := strings.TrimSpace(item.RiskLevel)
 	readOnly := riskLevel == "read"
 	destructive := riskLevel == "mutate" || riskLevel == "execute" || riskLevel == "high"
-	annotations := map[string]any{
+	return map[string]any{
 		"title":           firstNonEmptyString(strings.TrimSpace(item.Title), item.Name),
 		"readOnlyHint":    readOnly,
 		"destructiveHint": destructive,
 		"idempotentHint":  readOnly,
 		"openWorldHint":   true,
 	}
-	return annotations
 }
 
 func toolDescription(item ToolCapability) string {
@@ -411,14 +427,14 @@ func toolDescription(item ToolCapability) string {
 	return strings.Join(parts, "\n")
 }
 
-func mcpTextResult(text string, isError bool) map[string]any {
-	return map[string]any{
-		"content": []map[string]string{{"type": "text", "text": text}},
-		"isError": isError,
+func mcpTextResult(text string, isError bool) *mcpsdk.CallToolResult {
+	return &mcpsdk.CallToolResult{
+		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: text}},
+		IsError: isError,
 	}
 }
 
-func mcpResourceReadResult(result ResourceReadResult) map[string]any {
+func mcpResourceReadResult(result ResourceReadResult) *mcpsdk.ReadResourceResult {
 	text := result.Text
 	if strings.TrimSpace(text) == "" && result.Data != nil {
 		raw, _ := json.MarshalIndent(result.Data, "", "  ")
@@ -431,87 +447,46 @@ func mcpResourceReadResult(result ResourceReadResult) map[string]any {
 	if mimeType == "" {
 		mimeType = "application/json"
 	}
-	uri := firstNonEmptyString(result.URI, result.Name)
-	return map[string]any{
-		"contents": []map[string]any{{
-			"uri":      uri,
-			"mimeType": mimeType,
-			"text":     text,
-		}},
-	}
+	return &mcpsdk.ReadResourceResult{Contents: []*mcpsdk.ResourceContents{{
+		URI:      firstNonEmptyString(result.URI, result.Name),
+		MIMEType: mimeType,
+		Text:     text,
+	}}}
 }
 
-func mcpPromptMessages(items []PromptMessage) []map[string]any {
-	out := make([]map[string]any, 0, len(items))
+func mcpPromptMessages(items []PromptMessage) []*mcpsdk.PromptMessage {
+	out := make([]*mcpsdk.PromptMessage, 0, len(items))
 	for _, item := range items {
 		role := strings.TrimSpace(item.Role)
 		if role != "assistant" {
 			role = "user"
 		}
-		out = append(out, map[string]any{
-			"role": role,
-			"content": map[string]string{
-				"type": "text",
-				"text": item.Content,
-			},
+		out = append(out, &mcpsdk.PromptMessage{
+			Role:    mcpsdk.Role(role),
+			Content: &mcpsdk.TextContent{Text: item.Content},
 		})
 	}
 	return out
 }
 
-func readRPCMessage(reader *bufio.Reader) (rpcMessage, error) {
-	header, err := reader.Peek(1)
-	if err != nil {
-		return rpcMessage{}, err
+func mcpContext(meta mcpsdk.Meta) map[string]any {
+	if contextValues, ok := meta["soha/context"].(map[string]any); ok {
+		return contextValues
 	}
-	if len(header) > 0 && header[0] == '{' {
-		line, err := reader.ReadBytes('\n')
-		if err != nil && err != io.EOF {
-			return rpcMessage{}, err
-		}
-		var msg rpcMessage
-		return msg, json.Unmarshal(line, &msg)
-	}
-	contentLength := -1
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return rpcMessage{}, err
-		}
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			break
-		}
-		name, value, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "Content-Length") {
-			contentLength, err = strconv.Atoi(strings.TrimSpace(value))
-			if err != nil {
-				return rpcMessage{}, err
-			}
-		}
-	}
-	if contentLength < 0 {
-		return rpcMessage{}, fmt.Errorf("missing Content-Length header")
-	}
-	raw := make([]byte, contentLength)
-	if _, err := io.ReadFull(reader, raw); err != nil {
-		return rpcMessage{}, err
-	}
-	var msg rpcMessage
-	return msg, json.Unmarshal(raw, &msg)
+	soha, _ := meta["soha"].(map[string]any)
+	contextValues, _ := soha["context"].(map[string]any)
+	return contextValues
 }
 
-func writeRPCMessage(out io.Writer, msg rpcMessage) error {
-	raw, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Content-Length: %d\r\n\r\n%s", len(raw), raw)
-	return err
+func mcpBackendError(err error) error {
+	return &jsonrpc.Error{Code: mcpBackendErrorCode, Message: redactSensitiveText(err.Error())}
 }
+
+type nopWriteCloser struct {
+	io.Writer
+}
+
+func (nopWriteCloser) Close() error { return nil }
 
 func newFlagSet(name string, out io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)

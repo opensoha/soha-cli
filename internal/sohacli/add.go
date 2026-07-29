@@ -3,6 +3,7 @@ package sohacli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -25,14 +26,84 @@ type addTargetSpec struct {
 	RestartMessage string
 }
 
-func runAdd(args []string, rt Runtime) error {
+type setupMode string
+
+const (
+	setupModeMCP   setupMode = "mcp"
+	setupModeSkill setupMode = "skill"
+	setupModeBoth  setupMode = "both"
+)
+
+func runSetup(ctx context.Context, args []string, rt Runtime) error {
+	client, remaining, err := extractSetupClient(args)
+	if err != nil {
+		return err
+	}
+	if client == "" {
+		return runAdd(ctx, remaining, rt)
+	}
+	if len(remaining) > 0 && !strings.HasPrefix(strings.TrimSpace(remaining[0]), "-") {
+		positional := strings.ToLower(strings.TrimSpace(remaining[0]))
+		selected := strings.ToLower(strings.TrimSpace(client))
+		if positional != selected {
+			return fmt.Errorf("setup target %q conflicts with --client %q", positional, selected)
+		}
+		remaining = remaining[1:]
+	}
+	return runAdd(ctx, append([]string{client}, remaining...), rt)
+}
+
+func extractSetupClient(args []string) (string, []string, error) {
+	remaining := make([]string, 0, len(args))
+	client := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--client":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return "", nil, fmt.Errorf("--client requires a target")
+			}
+			i++
+			client = strings.TrimSpace(args[i])
+		case strings.HasPrefix(arg, "--client="):
+			client = strings.TrimSpace(strings.TrimPrefix(arg, "--client="))
+		default:
+			remaining = append(remaining, arg)
+		}
+	}
+	if strings.TrimSpace(client) == "" && len(args) != len(remaining) {
+		return "", nil, fmt.Errorf("--client requires a target")
+	}
+	return client, remaining, nil
+}
+
+func parseSetupMode(value string) (setupMode, error) {
+	mode := setupMode(strings.ToLower(strings.TrimSpace(value)))
+	switch mode {
+	case setupModeMCP, setupModeSkill, setupModeBoth:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid --mode %q; use mcp, skill, or both", value)
+	}
+}
+
+func (mode setupMode) includesMCP() bool {
+	return mode == setupModeMCP || mode == setupModeBoth
+}
+
+func (mode setupMode) includesSkills() bool {
+	return mode == setupModeSkill || mode == setupModeBoth
+}
+
+func runAdd(ctx context.Context, args []string, rt Runtime) error {
+	resolvedSources := map[string]string{}
 	if len(args) == 0 || strings.HasPrefix(strings.TrimSpace(args[0]), "-") {
 		targets, err := promptAddTargets(rt)
 		if err != nil {
 			return err
 		}
 		for _, spec := range targets {
-			if err := runAddTarget(args, rt, spec); err != nil {
+			if err := runAddTarget(ctx, args, rt, spec, resolvedSources); err != nil {
 				return err
 			}
 		}
@@ -41,7 +112,7 @@ func runAdd(args []string, rt Runtime) error {
 	targetName := strings.ToLower(strings.TrimSpace(args[0]))
 	if targetName == "all" {
 		for _, spec := range addAllTargets() {
-			if err := runAddTarget(args[1:], rt, spec); err != nil {
+			if err := runAddTarget(ctx, args[1:], rt, spec, resolvedSources); err != nil {
 				return err
 			}
 		}
@@ -51,7 +122,7 @@ func runAdd(args []string, rt Runtime) error {
 	if !ok {
 		return fmt.Errorf("unknown add target %q", args[0])
 	}
-	return runAddTarget(args[1:], rt, spec)
+	return runAddTarget(ctx, args[1:], rt, spec, resolvedSources)
 }
 
 func promptAddTargets(rt Runtime) ([]addTargetSpec, error) {
@@ -131,12 +202,15 @@ func parsePositiveIndex(value string) (int, bool) {
 	return n, value != ""
 }
 
-func runAddCodex(args []string, rt Runtime) error {
-	return runAddTarget(args, rt, mustAddTarget("codex"))
+func runAddCodex(ctx context.Context, args []string, rt Runtime) error {
+	return runAddTarget(ctx, args, rt, mustAddTarget("codex"), map[string]string{})
 }
 
-func runAddTarget(args []string, rt Runtime, target addTargetSpec) error {
+func runAddTarget(ctx context.Context, args []string, rt Runtime, target addTargetSpec, resolvedSources map[string]string) error {
 	fs := newRuntimeFlagSet("add "+target.Name, args, rt)
+	modeFlag := fs.String("mode", string(setupModeBoth), "components to configure: mcp, skill, or both")
+	scopeFlag := fs.String("scope", "user", "configuration scope: user or project")
+	checkFlag := fs.Bool("check", false, "verify configuration without writing files")
 	profileFlag := fs.String("profile", "", "profile name for the generated MCP server")
 	serverFlag := fs.String("server", "", "Soha API base URL for the profile")
 	baseURLFlag := fs.String("base-url", "", "alias for --server")
@@ -144,7 +218,7 @@ func runAddTarget(args []string, rt Runtime, target addTargetSpec) error {
 	aiClientIDFlag := fs.String("ai-client-id", "", "AI client id for Gateway audit context")
 	aiClientNameFlag := fs.String("ai-client", "", "AI client display name for Gateway audit context")
 	skillIDFlag := fs.String("skill-id", "", "skill id for the generated MCP server")
-	sourceFlag := fs.String("skills-source", defaultSkillSourcePath(), "source Soha skill directory")
+	sourceFlag := fs.String("skills-source", defaultSkillSourcePath(), "Soha skill directory, release archive, URL, or github:owner/repo[@latest|@version]")
 	sourceAliasFlag := fs.String("source", "", "alias for --skills-source")
 	skillsFlag := fs.String("skills", "all", "comma-separated skill ids to install, or all")
 	codexHomeFlag := fs.String("codex-home", defaultCodexHome(), "Codex home containing config.toml")
@@ -153,7 +227,7 @@ func runAddTarget(args []string, rt Runtime, target addTargetSpec) error {
 	agentsHomeFlag := fs.String("agents-home", defaultAgentsHome(), "Codex agents home containing skills")
 	skillDestFlag := fs.String("skill-dest", "", "Codex skill destination directory")
 	destAliasFlag := fs.String("dest", "", "alias for --skill-dest")
-	runtimeSkillDestFlag := fs.String("runtime-skill-dest", defaultSkillInstallPath(), "Soha runtime skill destination directory")
+	runtimeSkillDestFlag := fs.String("runtime-skill-dest", "", "Soha runtime skill destination directory")
 	mcpNameFlag := fs.String("mcp-name", "soha", "Codex MCP server name")
 	noRuntimeSkillsFlag := fs.Bool("no-runtime-skills", false, "skip installing raw Soha runtime skills")
 	overwriteFlag := fs.Bool("overwrite", true, "overwrite generated skill files")
@@ -161,6 +235,19 @@ func runAddTarget(args []string, rt Runtime, target addTargetSpec) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	mode, err := parseSetupMode(*modeFlag)
+	if err != nil {
+		return err
+	}
+	scope := strings.ToLower(strings.TrimSpace(*scopeFlag))
+	if scope != "user" && scope != "project" {
+		return fmt.Errorf("invalid --scope %q; use user or project", *scopeFlag)
+	}
+	if *checkFlag && *dryRunFlag {
+		return fmt.Errorf("--check and --dry-run cannot be used together")
+	}
+	installMCP := mode.includesMCP()
+	installSkills := mode.includesSkills()
 
 	cfg, err := loadConfig(rt.ConfigPath)
 	if err != nil {
@@ -193,36 +280,91 @@ func runAddTarget(args []string, rt Runtime, target addTargetSpec) error {
 	if strings.TrimSpace(updatedProfile.Source) == "" {
 		updatedProfile.Source = "codex"
 	}
-	source := firstNonEmptyString(*sourceAliasFlag, *sourceFlag)
-	if source == "" {
-		return fmt.Errorf("skill source directory is required")
+	var sourceRef, source string
+	var skillNames []string
+	if installSkills {
+		sourceRef = firstNonEmptyString(*sourceAliasFlag, *sourceFlag)
+		if sourceRef == "" {
+			return fmt.Errorf("skill source directory is required")
+		}
+		source = resolvedSources[sourceRef]
+		if source == "" {
+			source, err = resolveSkillSource(ctx, sourceRef, rt)
+			if err != nil {
+				return err
+			}
+			resolvedSources[sourceRef] = source
+		}
+		skillNames, err = addSkillNames(source, *skillsFlag)
+		if err != nil {
+			return err
+		}
 	}
-	source = normalizeSkillSourcePath(source)
 	mcpName := strings.TrimSpace(*mcpNameFlag)
-	if !isSafeSkillName(mcpName) {
+	if installMCP && !isSafeSkillName(mcpName) {
 		return fmt.Errorf("invalid MCP server name %q", mcpName)
-	}
-
-	skillNames, err := addSkillNames(source, *skillsFlag)
-	if err != nil {
-		return err
 	}
 	codexHome := expandHome(*codexHomeFlag)
 	agentsHome := expandHome(*agentsHomeFlag)
-	defaultSkillDest := target.DefaultSkill()
-	if target.Name == "codex" {
+	defaultConfigPath, defaultSkillDest, err := addTargetDefaultsForScope(target, scope)
+	if err != nil {
+		return err
+	}
+	if scope == "user" && target.Name == "codex" {
 		defaultSkillDest = filepath.Join(agentsHome, "skills")
+		defaultConfigPath = filepath.Join(codexHome, "config.toml")
 	}
 	skillDest := firstNonEmptyString(*destAliasFlag, *skillDestFlag, defaultSkillDest)
 	skillDest = expandHome(skillDest)
-	runtimeSkillDest := expandHome(*runtimeSkillDestFlag)
-	targetConfigPath := target.DefaultConfig()
-	if target.Name == "codex" {
-		targetConfigPath = filepath.Join(codexHome, "config.toml")
+	runtimeSkillDest, err := resolveSkillInstallDestination(scope, *runtimeSkillDestFlag)
+	if err != nil {
+		return err
 	}
-	targetConfigPath = expandHome(firstNonEmptyString(*configFlag, *codexConfigFlag, targetConfigPath))
-	mcpArgs := mcpInstallArgs(profileNameValue, aiClientID, aiClientName, skillID)
-	mcpBlock := codexMCPBlock(mcpName, command, mcpArgs)
+	targetConfigPath := expandHome(firstNonEmptyString(*configFlag, *codexConfigFlag, defaultConfigPath))
+	var mcpArgs []string
+	var mcpBlock string
+	if installMCP {
+		mcpBaseURL := firstNonEmptyString(*baseURLFlag, *serverFlag)
+		if strings.TrimSpace(mcpBaseURL) == "" && serverURL != defaultServerURL {
+			mcpBaseURL = serverURL
+		}
+		mcpArgs = mcpInstallArgs(profileNameValue, mcpBaseURL, aiClientID, aiClientName, skillID)
+		mcpBlock = codexMCPBlock(mcpName, command, mcpArgs)
+	}
+	if installSkills {
+		if _, err := sohaSkillPackageFiles(source, skillDest, skillNames); err != nil {
+			return err
+		}
+	}
+
+	if *checkFlag {
+		if !profileExists {
+			return fmt.Errorf("Soha profile %q is not configured", profileNameValue)
+		}
+		if updatedProfile != profileConfig {
+			return fmt.Errorf("Soha profile %q does not match the requested setup", profileNameValue)
+		}
+		fmt.Fprintf(rt.Out, "Checked Soha profile %s: %s\n", profileNameValue, serverURL)
+		if installMCP {
+			if err := verifyMCPConfig(target, targetConfigPath, mcpName, command, mcpArgs, mcpBlock); err != nil {
+				return err
+			}
+			fmt.Fprintf(rt.Out, "Checked %s MCP server %s in %s\n", target.DisplayName, mcpName, targetConfigPath)
+		}
+		if installSkills {
+			if err := verifySohaSkillPackage(source, skillDest, skillNames); err != nil {
+				return err
+			}
+			fmt.Fprintf(rt.Out, "Checked %s Soha skill package in %s\n", target.DisplayName, filepath.Join(skillDest, "soha"))
+			if !*noRuntimeSkillsFlag {
+				if err := verifyRuntimeSkills(source, runtimeSkillDest, skillNames); err != nil {
+					return err
+				}
+				fmt.Fprintf(rt.Out, "Checked Soha runtime skills in %s\n", runtimeSkillDest)
+			}
+		}
+		return nil
+	}
 
 	if *dryRunFlag {
 		if !profileExists || updatedProfile != profileConfig {
@@ -230,18 +372,70 @@ func runAddTarget(args []string, rt Runtime, target addTargetSpec) error {
 		} else {
 			fmt.Fprintf(rt.Out, "Soha profile %s already uses API base URL: %s\n", profileNameValue, serverURL)
 		}
-		if target.ConfigKind == "toml" {
-			fmt.Fprintf(rt.Out, "Would update %s MCP config: %s\n\n%s\n", target.DisplayName, targetConfigPath, mcpBlock)
-		} else {
-			fmt.Fprintf(rt.Out, "Would update %s MCP config: %s\n", target.DisplayName, targetConfigPath)
-			fmt.Fprintf(rt.Out, "Would set mcpServers.%s command=%s args=%s\n", mcpName, command, strings.Join(mcpArgs, " "))
+		if installMCP {
+			if target.ConfigKind == "toml" {
+				fmt.Fprintf(rt.Out, "Would update %s MCP config: %s\n\n%s\n", target.DisplayName, targetConfigPath, mcpBlock)
+			} else {
+				fmt.Fprintf(rt.Out, "Would update %s MCP config: %s\n", target.DisplayName, targetConfigPath)
+				fmt.Fprintf(rt.Out, "Would set mcpServers.%s command=%s args=%s\n", mcpName, command, strings.Join(mcpArgs, " "))
+			}
 		}
-		fmt.Fprintf(rt.Out, "Would install %s Soha skill package: %s\n", target.DisplayName, filepath.Join(skillDest, "soha", "SKILL.md"))
-		fmt.Fprintf(rt.Out, "Would copy skill references from %s: %s\n", source, strings.Join(skillNames, ", "))
-		if !*noRuntimeSkillsFlag {
-			fmt.Fprintf(rt.Out, "Would install Soha runtime skills to %s: %s\n", runtimeSkillDest, strings.Join(skillNames, ", "))
+		if installSkills {
+			fmt.Fprintf(rt.Out, "Would install %s Soha skill package: %s\n", target.DisplayName, filepath.Join(skillDest, "soha", "SKILL.md"))
+			fmt.Fprintf(rt.Out, "Would copy skill references from %s: %s\n", sourceRef, strings.Join(skillNames, ", "))
+			if !*noRuntimeSkillsFlag {
+				fmt.Fprintf(rt.Out, "Would install Soha runtime skills to %s: %s\n", runtimeSkillDest, strings.Join(skillNames, ", "))
+			}
 		}
 		return nil
+	}
+
+	if installMCP {
+		var backupPath string
+		var changed bool
+		if target.ConfigKind == "toml" {
+			backupPath, changed, err = upsertCodexMCPConfig(targetConfigPath, "mcp_servers."+mcpName, mcpBlock)
+			if err != nil {
+				return err
+			}
+		} else {
+			backupPath, changed, err = upsertJSONMCPConfig(targetConfigPath, mcpName, command, mcpArgs, target.JSONC, target.JSONDisabled)
+			if err != nil {
+				return err
+			}
+		}
+		if changed {
+			fmt.Fprintf(rt.Out, "Configured %s MCP server %s in %s\n", target.DisplayName, mcpName, targetConfigPath)
+			if backupPath != "" {
+				fmt.Fprintf(rt.Out, "Backed up previous %s config to %s\n", target.DisplayName, backupPath)
+			}
+		} else {
+			fmt.Fprintf(rt.Out, "%s MCP server %s already up to date in %s\n", target.DisplayName, mcpName, targetConfigPath)
+		}
+	}
+
+	if installSkills {
+		installed, err := installSohaSkillPackage(source, skillDest, skillNames, *overwriteFlag)
+		if err != nil {
+			return err
+		}
+		for _, path := range installed {
+			fmt.Fprintf(rt.Out, "Installed %s Soha skill file %s\n", target.DisplayName, path)
+		}
+
+		if !*noRuntimeSkillsFlag {
+			generation, changed, err := installSkillGeneration(source, sourceRef, runtimeSkillDest, skillNames, *overwriteFlag, "install")
+			if err != nil {
+				return err
+			}
+			if !changed {
+				fmt.Fprintf(rt.Out, "Soha runtime skills already up to date in %s\n", runtimeSkillDest)
+			} else {
+				for _, name := range generation.Skills {
+					fmt.Fprintf(rt.Out, "Installed Soha runtime skill %s to %s\n", name, filepath.Join(runtimeSkillDest, name, "SKILL.md"))
+				}
+			}
+		}
 	}
 
 	if !profileExists || updatedProfile != profileConfig {
@@ -254,52 +448,42 @@ func runAddTarget(args []string, rt Runtime, target addTargetSpec) error {
 		fmt.Fprintf(rt.Out, "Soha profile %s already uses API base URL %s\n", profileNameValue, serverURL)
 	}
 
-	var backupPath string
-	var changed bool
-	if target.ConfigKind == "toml" {
-		backupPath, changed, err = upsertCodexMCPConfig(targetConfigPath, "mcp_servers."+mcpName, mcpBlock)
-		if err != nil {
-			return err
-		}
-	} else {
-		backupPath, changed, err = upsertJSONMCPConfig(targetConfigPath, mcpName, command, mcpArgs, target.JSONC, target.JSONDisabled)
-		if err != nil {
-			return err
-		}
-	}
-	if changed {
-		fmt.Fprintf(rt.Out, "Configured %s MCP server %s in %s\n", target.DisplayName, mcpName, targetConfigPath)
-		if backupPath != "" {
-			fmt.Fprintf(rt.Out, "Backed up previous %s config to %s\n", target.DisplayName, backupPath)
-		}
-	} else {
-		fmt.Fprintf(rt.Out, "%s MCP server %s already up to date in %s\n", target.DisplayName, mcpName, targetConfigPath)
-	}
-
-	installed, err := installSohaSkillPackage(source, skillDest, skillNames, target.Name, profileNameValue, command, *overwriteFlag)
-	if err != nil {
-		return err
-	}
-	for _, path := range installed {
-		fmt.Fprintf(rt.Out, "Installed %s Soha skill file %s\n", target.DisplayName, path)
-	}
-
-	if !*noRuntimeSkillsFlag {
-		for _, name := range skillNames {
-			installedPath, err := installLocalSkill(source, runtimeSkillDest, name, *overwriteFlag)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(rt.Out, "Installed Soha runtime skill %s to %s\n", name, installedPath)
-		}
-	}
-
 	if strings.TrimSpace(target.RestartMessage) != "" {
 		fmt.Fprintln(rt.Out, target.RestartMessage)
 	} else {
 		fmt.Fprintf(rt.Out, "Restart %s or open a new session so MCP servers and skills are reloaded.\n", target.DisplayName)
 	}
 	return nil
+}
+
+func addTargetDefaultsForScope(target addTargetSpec, scope string) (string, string, error) {
+	if scope == "user" {
+		return target.DefaultConfig(), target.DefaultSkill(), nil
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve project directory: %w", err)
+	}
+	switch target.Name {
+	case "codex":
+		return filepath.Join(root, ".codex", "config.toml"), filepath.Join(root, ".agents", "skills"), nil
+	case "claude":
+		return filepath.Join(root, ".mcp.json"), filepath.Join(root, ".claude", "skills"), nil
+	case "cursor":
+		return filepath.Join(root, ".cursor", "mcp.json"), filepath.Join(root, ".cursor", "skills"), nil
+	case "kiro":
+		return filepath.Join(root, ".kiro", "settings", "mcp.json"), filepath.Join(root, ".kiro", "steering"), nil
+	case "gemini":
+		return filepath.Join(root, ".gemini", "settings.json"), filepath.Join(root, ".gemini", "skills"), nil
+	case "antigravity":
+		return filepath.Join(root, ".gemini", "antigravity", "mcp_config.json"), filepath.Join(root, ".gemini", "antigravity", "skills"), nil
+	case "antigravity-ide":
+		return filepath.Join(root, ".gemini", "antigravity-ide", "mcp_config.json"), filepath.Join(root, ".gemini", "antigravity-ide", "skills"), nil
+	case "trae":
+		return filepath.Join(root, ".trae", "mcp.json"), filepath.Join(root, ".trae", "skills"), nil
+	default:
+		return "", "", fmt.Errorf("project scope is not supported for %s", target.DisplayName)
+	}
 }
 
 func addTarget(name string) (addTargetSpec, bool) {
@@ -609,6 +793,53 @@ func upsertJSONMCPConfig(path, serverName, command string, args []string, jsonc 
 	return backupPath, true, nil
 }
 
+func verifyMCPConfig(target addTargetSpec, path, serverName, command string, args []string, tomlBlock string) error {
+	raw, _, statErr, err := readOptionalFile(path)
+	if err != nil {
+		return err
+	}
+	if statErr != nil {
+		return fmt.Errorf("%s MCP config does not exist: %s", target.DisplayName, path)
+	}
+	if target.ConfigKind == "toml" {
+		next := upsertTOMLSection(string(raw), "mcp_servers."+serverName, strings.TrimRight(tomlBlock, "\n"))
+		if next != string(raw) {
+			return fmt.Errorf("%s MCP server %q is missing or stale in %s", target.DisplayName, serverName, path)
+		}
+		return nil
+	}
+	decodeRaw := raw
+	if target.JSONC {
+		decodeRaw = stripJSONComments(raw)
+	}
+	root := map[string]any{}
+	if err := json.Unmarshal(decodeRaw, &root); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
+	}
+	servers, _ := root["mcpServers"].(map[string]any)
+	entry, _ := servers[serverName].(map[string]any)
+	if entry == nil || entry["command"] != command || !jsonStringSliceEqual(entry["args"], args) {
+		return fmt.Errorf("%s MCP server %q is missing or stale in %s", target.DisplayName, serverName, path)
+	}
+	if target.JSONDisabled && entry["disabled"] != false {
+		return fmt.Errorf("%s MCP server %q is disabled in %s", target.DisplayName, serverName, path)
+	}
+	return nil
+}
+
+func jsonStringSliceEqual(value any, expected []string) bool {
+	items, ok := value.([]any)
+	if !ok || len(items) != len(expected) {
+		return false
+	}
+	for index, item := range items {
+		if item != expected[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func readOptionalFile(path string) ([]byte, fs.FileMode, error, error) {
 	mode := fs.FileMode(0o600)
 	stat, statErr := os.Stat(path)
@@ -712,11 +943,23 @@ func upsertTOMLSection(raw, section, block string) string {
 	return strings.TrimRight(raw, "\n") + "\n\n" + strings.Join(blockLines, "\n") + "\n"
 }
 
-func installSohaSkillPackage(source, dest string, skillNames []string, target, profile, command string, overwrite bool) ([]string, error) {
+func sohaSkillPackageFiles(source, dest string, skillNames []string) (map[string][]byte, error) {
 	root := filepath.Join(dest, "soha")
+	agentSkillSource, err := findSohaAgentSkillSource(source)
+	if err != nil {
+		return nil, err
+	}
+	skillMarkdown, err := os.ReadFile(filepath.Join(agentSkillSource, "SKILL.md"))
+	if err != nil {
+		return nil, err
+	}
+	openAIYAML, err := os.ReadFile(filepath.Join(agentSkillSource, "agents", "openai.yaml"))
+	if err != nil {
+		return nil, err
+	}
 	writes := map[string][]byte{
-		filepath.Join(root, "SKILL.md"):              []byte(codexSohaSkillMarkdown(target, skillNames)),
-		filepath.Join(root, "agents", "openai.yaml"): []byte(codexSohaOpenAIYAML(target, profile, command)),
+		filepath.Join(root, "SKILL.md"):              skillMarkdown,
+		filepath.Join(root, "agents", "openai.yaml"): openAIYAML,
 	}
 	indexPath := filepath.Join(filepath.Dir(source), "index.json")
 	if raw, err := os.ReadFile(indexPath); err == nil {
@@ -728,6 +971,38 @@ func installSohaSkillPackage(source, dest string, skillNames []string, target, p
 			return nil, err
 		}
 		writes[filepath.Join(root, "references", "skills", name+".md")] = raw
+	}
+	return writes, nil
+}
+
+func findSohaAgentSkillSource(source string) (string, error) {
+	candidates := []string{
+		filepath.Join(filepath.Dir(filepath.Dir(source)), "agent-skills", "soha"),
+		filepath.Join(source, "agent-skills", "soha"),
+		filepath.Join(filepath.Dir(source), "agent-skills", "soha"),
+	}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		candidate = filepath.Clean(candidate)
+		if seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		if _, err := os.Stat(filepath.Join(candidate, "SKILL.md")); err != nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(candidate, "agents", "openai.yaml")); err != nil {
+			continue
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("skills source %s does not contain canonical agent-skills/soha", source)
+}
+
+func installSohaSkillPackage(source, dest string, skillNames []string, overwrite bool) ([]string, error) {
+	writes, err := sohaSkillPackageFiles(source, dest, skillNames)
+	if err != nil {
+		return nil, err
 	}
 
 	paths := make([]string, 0, len(writes))
@@ -741,6 +1016,41 @@ func installSohaSkillPackage(source, dest string, skillNames []string, target, p
 		}
 	}
 	return paths, nil
+}
+
+func verifySohaSkillPackage(source, dest string, skillNames []string) error {
+	writes, err := sohaSkillPackageFiles(source, dest, skillNames)
+	if err != nil {
+		return err
+	}
+	for path, expected := range writes {
+		actual, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("Soha skill file is missing: %s", path)
+		}
+		if !bytes.Equal(actual, expected) {
+			return fmt.Errorf("Soha skill file is stale: %s", path)
+		}
+	}
+	return nil
+}
+
+func verifyRuntimeSkills(source, dest string, skillNames []string) error {
+	for _, name := range skillNames {
+		expected, err := os.ReadFile(filepath.Join(source, name, "SKILL.md"))
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(dest, name, "SKILL.md")
+		actual, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("Soha runtime skill is missing: %s", path)
+		}
+		if !bytes.Equal(actual, expected) {
+			return fmt.Errorf("Soha runtime skill is stale: %s", path)
+		}
+	}
+	return nil
 }
 
 func writeGeneratedFile(path string, raw []byte, overwrite bool) error {
@@ -765,73 +1075,4 @@ func writeGeneratedFile(path string, raw []byte, overwrite bool) error {
 		return err
 	}
 	return nil
-}
-
-func codexSohaSkillMarkdown(target string, skillNames []string) string {
-	references := make([]string, 0, len(skillNames))
-	for _, name := range skillNames {
-		references = append(references, fmt.Sprintf("   - `%s.md`", name))
-	}
-	addCommand := "soha add " + target
-	return strings.TrimSpace(`---
-name: soha
-description: >
-  Use when a task involves OpenSoha / Soha AI Gateway through the local soha
-  CLI or MCP server: configuring Codex MCP, checking profiles and capabilities,
-  installing Soha skills, invoking Gateway tools/resources/prompts, or using
-  delivery, release-testing, Kubernetes SRE, and security-change workflows.
-allowed-tools:
-  - Bash(which soha)
-  - Bash(soha version*)
-  - Bash(soha profile*)
-  - Bash(soha context*)
-  - Bash(soha capabilities*)
-  - Bash(soha diagnose*)
-  - Bash(soha mcp*)
-  - Bash(soha skill*)
-  - Bash(soha tool call*)
-  - Bash(soha resource read*)
-  - Bash(soha prompt get*)
-  - Bash(soha approval*)
-  - Bash(soha audit*)
-  - Bash(soha governance*)
----
-
-# Soha CLI
-
-Use the local `+"`soha`"+` CLI as the source of truth for OpenSoha AI Gateway work. Do not bypass Gateway with direct Kubernetes, CI, database, runner, or deployment-target commands.
-
-## Setup
-
-Check the CLI and active profile first:
-
-`+"```bash"+`
-which soha
-soha version --json
-soha profile list
-soha context show
-`+"```"+`
-
-If MCP is not configured, use `+"`"+addCommand+"`"+` to write the generated `+"`mcpServers.soha`"+` entry for this client.
-
-## Workflow
-
-1. Use `+"`soha capabilities --output names`"+` to see visible Gateway tools.
-2. Use `+"`soha capabilities --output inputs`"+` before invoking an unfamiliar tool.
-3. Use `+"`soha diagnose --tool <name>`"+` when access, scope, MCP grants, or skill bindings are unclear.
-4. For product workflows, read the matching reference under `+"`references/skills/`"+`:
-`+strings.Join(references, "\n")+`
-5. Keep `+"`cluster`"+`, `+"`namespace`"+`, `+"`application`"+`, `+"`environment`"+`, and related IDs explicit in tool calls and final answers.
-6. Treat missing capabilities, denied grants, approval-required responses, and capability warnings as real constraints.
-
-## Guardrails
-
-- Never request or expose tokens, kubeconfig, passwords, private keys, registry credentials, environment secrets, or raw secret-looking logs.
-- Do not run `+"`kubectl`"+`, CI, Docker, PostgreSQL, or runner commands as a workaround for Gateway permissions.
-- Mutating delivery or security actions must go through visible Gateway tools and explicit user intent.
-`) + "\n"
-}
-
-func codexSohaOpenAIYAML(target, profile, command string) string {
-	return fmt.Sprintf("interface:\n  display_name: \"Soha\"\n  short_description: \"OpenSoha AI Gateway CLI and MCP workflows\"\n  default_prompt: \"Use $soha to inspect Soha Gateway capabilities or configure MCP.\"\nmetadata:\n  target: %s\n  profile: %s\n  command: %s\n", tomlString(target), tomlString(profile), tomlString(command))
 }

@@ -56,6 +56,10 @@ mcp_json="${workdir}/mcp.json"
 grep -q "\"command\": \"${soha_bin}\"" "${mcp_json}"
 grep -q '"release-smoke"' "${mcp_json}"
 grep -q '"k8s-sre"' "${mcp_json}"
+if grep -q '"start"' "${mcp_json}"; then
+  echo "mcp install emitted the legacy start subcommand" >&2
+  exit 1
+fi
 
 home="${workdir}/home"
 runtime_skills="${workdir}/runtime-skills"
@@ -71,24 +75,10 @@ if [[ -n "${SOHA_SKILLS_ARTIFACT:-}" ]]; then
   artifact_dir="$(cd "$(dirname "${SOHA_SKILLS_ARTIFACT}")" && pwd)"
   artifact_name="$(basename "${SOHA_SKILLS_ARTIFACT}")"
   artifact_path="${artifact_dir}/${artifact_name}"
-  checksum_file="${SOHA_SKILLS_ARTIFACT_SHA256:-${SOHA_SKILLS_ARTIFACT}.sha256}"
-  if [[ ! -f "${checksum_file}" ]]; then
-    echo "skills artifact checksum not found: ${checksum_file}" >&2
-    exit 1
-  fi
-  checksum_dir="$(cd "$(dirname "${checksum_file}")" && pwd)"
-  checksum_path="${checksum_dir}/$(basename "${checksum_file}")"
-  (
-    cd "${artifact_dir}"
-    shasum -a 256 -c "${checksum_path}"
-  )
-  skills_extract="${workdir}/skills-artifact"
-  mkdir -p "${skills_extract}"
-  tar -xzf "${artifact_path}" -C "${skills_extract}"
-  skills_source="${skills_extract}/soha-skills"
+  skills_source="${artifact_path}"
   skills_arg="all"
 else
-  mkdir -p "${skills_source}/k8s-sre"
+  mkdir -p "${skills_source}/k8s-sre" "${skills_source}/agent-skills/soha/agents"
   cat > "${skills_source}/k8s-sre/SKILL.md" <<'EOF'
 ---
 name: k8s-sre
@@ -97,13 +87,28 @@ description: Release smoke fixture.
 
 # K8s SRE
 EOF
+  cat > "${skills_source}/agent-skills/soha/SKILL.md" <<'EOF'
+---
+name: soha
+description: Use Soha MCP and governed delivery workflows.
+---
+
+# Soha
+EOF
+  cat > "${skills_source}/agent-skills/soha/agents/openai.yaml" <<'EOF'
+interface:
+  display_name: "Soha"
+  short_description: "Soha workflows"
+  default_prompt: "Use $soha for delivery work."
+EOF
 fi
 
 add_output="${workdir}/add-all.txt"
 HOME="${home}" \
 SOHA_CONFIG="${workdir}/soha-config.json" \
 SOHA_SKILLS_DIR="${runtime_skills}" \
-"${soha_bin}" add all \
+SOHA_SKILLS_CACHE="${workdir}/skills-cache" \
+"${soha_bin}" setup all \
   --dry-run \
   --profile release-smoke \
   --server https://mcp.opensoha.com \
@@ -117,5 +122,35 @@ for target in Codex Claude Cursor Kiro Gemini Antigravity Trae; do
   grep -q "Would install ${target} Soha skill package" "${add_output}"
 done
 grep -q "Would install Soha runtime skills" "${add_output}"
+
+HOME="${home}" \
+SOHA_SKILLS_CACHE="${workdir}/skills-cache" \
+"${soha_bin}" skill install \
+  --source "${skills_source}" \
+  --dest "${runtime_skills}" \
+  --all > "${workdir}/skill-install.txt"
+HOME="${home}" \
+"${soha_bin}" skill status --dest "${runtime_skills}" --json > "${workdir}/skill-status.json"
+grep -q '"managed": true' "${workdir}/skill-status.json"
+HOME="${home}" "${soha_bin}" skill remove --dest "${runtime_skills}" k8s-sre > "${workdir}/skill-remove.txt"
+test ! -e "${runtime_skills}/k8s-sre/SKILL.md"
+HOME="${home}" "${soha_bin}" skill rollback --dest "${runtime_skills}" > "${workdir}/skill-rollback.txt"
+test -f "${runtime_skills}/k8s-sre/SKILL.md"
+
+agent_skills="${workdir}/agent-skills"
+HOME="${home}" \
+SOHA_CONFIG="${workdir}/soha-config.json" \
+SOHA_SKILLS_CACHE="${workdir}/skills-cache" \
+"${soha_bin}" setup --client codex \
+  --mode skill \
+  --profile release-smoke \
+  --source "${skills_source}" \
+  --skills "${skills_arg}" \
+  --dest "${agent_skills}" \
+  --no-runtime-skills \
+  --command "${soha_bin}" > "${workdir}/setup-skill.txt"
+test -f "${agent_skills}/soha/SKILL.md"
+test -f "${agent_skills}/soha/agents/openai.yaml"
+grep -q 'name: soha' "${agent_skills}/soha/SKILL.md"
 
 echo "release smoke passed for ${archive}"

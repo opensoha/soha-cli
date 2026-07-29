@@ -1,6 +1,7 @@
 package sohacli
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,29 +10,44 @@ import (
 	"strings"
 )
 
-const defaultSkillSource = "skills/ai-gateway"
+const (
+	defaultSkillSource          = "skills/ai-gateway"
+	defaultPublishedSkillSource = "github:opensoha/soha-skills"
+)
 
-func runSkill(args []string, rt Runtime) error {
+func runSkill(ctx context.Context, args []string, rt Runtime) error {
 	if len(args) == 0 {
-		return fmt.Errorf("skill requires a subcommand: list or install")
+		return fmt.Errorf("skill requires a subcommand: list, install, status, update, remove, or rollback")
 	}
 	switch args[0] {
 	case "list":
-		return runSkillList(args[1:], rt)
+		return runSkillList(ctx, args[1:], rt)
 	case "install":
-		return runSkillInstall(args[1:], rt)
+		return runSkillInstall(ctx, args[1:], rt)
+	case "status":
+		return runSkillStatus(args[1:], rt)
+	case "update":
+		return runSkillUpdate(ctx, args[1:], rt)
+	case "remove":
+		return runSkillRemove(args[1:], rt)
+	case "rollback":
+		return runSkillRollback(args[1:], rt)
 	default:
 		return fmt.Errorf("unknown skill command %q", args[0])
 	}
 }
 
-func runSkillList(args []string, rt Runtime) error {
+func runSkillList(ctx context.Context, args []string, rt Runtime) error {
 	fs := newRuntimeFlagSet("skill list", args, rt)
-	source := fs.String("source", defaultSkillSourcePath(), "source skill directory")
+	source := fs.String("source", defaultSkillSourcePath(), "skill directory, release archive, URL, or github:owner/repo[@latest|@version]")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	items, err := listLocalSkills(*source)
+	resolvedSource, err := resolveSkillSource(ctx, *source, rt)
+	if err != nil {
+		return err
+	}
+	items, err := listLocalSkills(resolvedSource)
 	if err != nil {
 		return err
 	}
@@ -41,18 +57,27 @@ func runSkillList(args []string, rt Runtime) error {
 	return nil
 }
 
-func runSkillInstall(args []string, rt Runtime) error {
+func runSkillInstall(ctx context.Context, args []string, rt Runtime) error {
 	fs := newRuntimeFlagSet("skill install", args, rt)
-	source := fs.String("source", defaultSkillSourcePath(), "source skill directory")
-	dest := fs.String("dest", defaultSkillInstallPath(), "destination skill directory")
+	source := fs.String("source", defaultSkillSourcePath(), "skill directory, release archive, URL, or github:owner/repo[@latest|@version]")
+	dest := fs.String("dest", "", "destination skill directory")
+	scope := fs.String("scope", "user", "installation scope: user or project")
 	all := fs.Bool("all", false, "install all source skills")
 	overwrite := fs.Bool("overwrite", false, "overwrite existing installed skill files")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	installDest, err := resolveSkillInstallDestination(*scope, *dest)
+	if err != nil {
+		return err
+	}
+	resolvedSource, err := resolveSkillSource(ctx, *source, rt)
+	if err != nil {
+		return err
+	}
 	names := fs.Args()
 	if *all {
-		items, err := listLocalSkills(*source)
+		items, err := listLocalSkills(resolvedSource)
 		if err != nil {
 			return err
 		}
@@ -61,12 +86,16 @@ func runSkillInstall(args []string, rt Runtime) error {
 	if len(names) == 0 {
 		return fmt.Errorf("skill install requires a skill id or --all")
 	}
-	for _, name := range names {
-		installed, err := installLocalSkill(*source, *dest, name, *overwrite)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(rt.Out, "Installed skill %s to %s\n", name, installed)
+	generation, changed, err := installSkillGeneration(resolvedSource, *source, installDest, names, *overwrite, "install")
+	if err != nil {
+		return err
+	}
+	if !changed {
+		fmt.Fprintf(rt.Out, "Skills already up to date in %s\n", installDest)
+		return nil
+	}
+	for _, name := range generation.Skills {
+		fmt.Fprintf(rt.Out, "Installed skill %s to %s\n", name, filepath.Join(installDest, name, "SKILL.md"))
 	}
 	return nil
 }
@@ -75,16 +104,7 @@ func defaultSkillSourcePath() string {
 	if value := env("SOHA_SKILLS_SOURCE"); value != "" {
 		return value
 	}
-	for _, candidate := range []string{
-		defaultSkillSource,
-		filepath.Join("soha-skills", defaultSkillSource),
-		filepath.Join("..", "soha-skills", defaultSkillSource),
-	} {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	return defaultSkillSource
+	return defaultPublishedSkillSource
 }
 
 func defaultSkillInstallPath() string {
@@ -96,6 +116,24 @@ func defaultSkillInstallPath() string {
 		return filepath.Join(".soha", "skills")
 	}
 	return filepath.Join(home, ".soha", "skills")
+}
+
+func resolveSkillInstallDestination(scope, explicit string) (string, error) {
+	scope = strings.ToLower(strings.TrimSpace(scope))
+	if scope != "user" && scope != "project" {
+		return "", fmt.Errorf("invalid --scope %q; use user or project", scope)
+	}
+	if strings.TrimSpace(explicit) != "" {
+		return expandHome(explicit), nil
+	}
+	if scope == "user" {
+		return defaultSkillInstallPath(), nil
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve project directory: %w", err)
+	}
+	return filepath.Join(workingDir, ".soha", "skills"), nil
 }
 
 func listLocalSkills(source string) ([]string, error) {

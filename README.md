@@ -9,6 +9,22 @@ lifecycle, billing, quota, and operations logic belongs outside this repository.
 
 ## Install
 
+Run the official CLI without a global install through the thin npm launcher:
+
+```sh
+npx -y @opensoha/cli@latest mcp
+npx -y @opensoha/cli@latest setup --client codex --mode both
+```
+
+The npm launcher is published by the tagged release workflow. Until the first
+`@opensoha/cli` release is present in the npm registry, install the native
+GitHub Release binary instead; an npm `E404` means the package has not been
+published yet.
+
+The npm package does not implement MCP in JavaScript. It downloads the native
+binary from the matching GitHub release, verifies `checksums.txt`, caches it by
+version, and rechecks the cached binary before execution.
+
 Install a tagged module with Go:
 
 ```sh
@@ -32,6 +48,8 @@ through Go ldflags; `soha version --json` is the machine-readable verification
 command for installed binaries.
 
 ## Build
+
+Go 1.25 or newer is required because the CLI uses the official MCP Go SDK.
 
 ```sh
 go test ./...
@@ -112,35 +130,93 @@ soha profile list
 soha context set --ai-client-id codex-local --ai-client Codex --source codex
 soha capabilities --output names
 soha diagnose --tool k8s.pods.logs
+soha mcp
+soha mcp --base-url https://soha.internal.example
 soha mcp install --profile default --command /usr/local/bin/soha
-soha add codex --profile default --command /usr/local/bin/soha --source ../soha-skills
+soha setup --client codex --profile default --mode both --command /usr/local/bin/soha
 ```
 
-### Codex Integration
+### MCP Endpoint Selection
 
-`soha add codex` writes a `[mcp_servers.soha]` entry to Codex
+`soha mcp` is the direct stdio server entry point. `soha mcp start` remains as
+a compatibility form. Without an endpoint flag, MCP uses the official SaaS
+address `https://mcp.opensoha.com`. Use `--base-url` for a self-hosted Soha
+deployment; `--server` and `SOHA_SERVER` are compatibility overrides.
+
+For safety, a self-hosted profile is not silently redirected to the official
+endpoint. Run `soha mcp --profile <name> --base-url <profile-server>`, or use
+`soha setup`, which writes the self-hosted URL into the generated MCP client
+configuration. Authentication still comes from the selected profile or the
+one-command `SOHA_TOKEN` override.
+
+### Agent And IDE Setup
+
+`soha setup --client codex` writes a `[mcp_servers.soha]` entry to Codex
 `config.toml`, installs a Codex-compatible `soha` skill package under
 `~/.agents/skills/soha`, and installs the raw Soha runtime skills under
 `~/.soha/skills`:
 
 ```sh
-soha add codex \
+soha setup --client codex \
+  --mode both \
   --profile local \
-  --server http://localhost:8080 \
-  --command "$(command -v soha)" \
-  --source ../soha-skills
+  --base-url http://localhost:8080 \
+  --command "$(command -v soha)"
 ```
 
-Run `soha add` without a target to choose one or more AI agents and IDEs
-interactively:
+Use `--mode mcp`, `--mode skill`, or `--mode both` to control what is
+installed. `--dry-run` prints planned changes and `--check` verifies the
+profile, client MCP entry, canonical `$soha` skill, references, and runtime
+skills without writing files:
 
 ```sh
-soha add --profile local --server http://localhost:8080 --source ../soha-skills
+soha setup --client codex --check
+soha setup --client claude --mode mcp --base-url https://soha.internal.example
 ```
 
+The default `--scope user` writes user-level client configuration and skills.
+Use `--scope project` to write repository-local client configuration and put
+raw runtime skills under `.soha/skills`. Explicit `--config`, `--dest`, and
+`--runtime-skill-dest` paths take precedence over the selected scope:
+
+```sh
+soha setup --client codex --scope project
+soha skill status --scope project
+```
+
+Run `soha setup` without a target to choose one or more clients interactively.
 The selection accepts numbers, names, or `all`. Supported targets are `codex`,
 `claude`, `cursor`, `kiro`, `gemini`, `antigravity`, `antigravity-ide`, and
-`trae`.
+`trae`. `soha add` remains a compatibility alias for the older integration
+flow.
+
+By default, skills come from the latest stable GitHub Release in
+`opensoha/soha-skills`. The CLI resolves that release to its concrete semantic
+version before downloading release assets; it never installs directly from a branch.
+Use `--source github:opensoha/soha-skills@v0.1.0` only to pin a rollback or
+reproducible install. Local checkouts, local release tarballs, and HTTPS release
+asset URLs remain available through `--source` or `SOHA_SKILLS_SOURCE`.
+
+The canonical agent-facing `$soha` skill is owned by
+`soha-skills/agent-skills/soha`; the CLI copies it from the verified release
+instead of embedding a second prompt. Release sources are cached only after the checksum, external and embedded
+manifests, validation report, every packaged file hash, the compatibility
+matrix, and archive paths pass validation. A latest release missing any required
+asset fails closed. Downloading and installing skills does not require a Soha
+login; invoking Soha MCP tools still requires a configured profile and the
+backend permissions for each capability.
+
+Raw runtime installs are managed as verified generations. Install and update
+stage a complete directory before activation, retain the previous generation
+for rollback, and append activation records to a local JSONL audit log. The
+normal update path always resolves the latest stable release:
+
+```sh
+soha skill status
+soha skill update
+soha skill remove k8s-sre
+soha skill rollback
+```
 
 The command is idempotent for the MCP section and generated skill package. Pass
 `--server` or `--base-url` to set the Soha API base URL for the generated
@@ -183,12 +259,17 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `profile use` | Switch the current profile. | `soha profile use cloud` |
 | `context show` | Show AI client context headers. | `soha context show` |
 | `context set` | Update AI client context headers. | `soha context set --skill-id k8s-sre --source codex` |
-| `mcp start` | Run the Soha MCP stdio server. | `soha mcp start --profile default` |
+| `mcp` | Run the Soha MCP stdio server against official SaaS by default. | `soha mcp`, `soha mcp --base-url https://soha.internal.example` |
+| `mcp start` | Compatibility form of the MCP stdio server. | `soha mcp start --profile default` |
 | `mcp install` | Print MCP client configuration. | `soha mcp install --command /usr/local/bin/soha` |
-| `skill list` | List local Soha skill files. | `soha skill list --source ../soha-skills` |
-| `skill install` | Install local Soha skill files. | `soha skill install --source ../soha-skills --dest ~/.soha/skills k8s-sre` |
-| `add` | Interactively choose AI agents or IDEs and add Soha MCP plus skills. | `soha add --profile local --server http://localhost:8080 --source ../soha-skills` |
-| `add <target>` | Add Soha MCP and a skill package for one target. | `soha add claude --profile default --server https://mcp.opensoha.com --command /usr/local/bin/soha --source ../soha-skills` |
+| `skill list` | List Soha skills from a local or verified release source. | `soha skill list` |
+| `skill install` | Install Soha skills from a local or verified release source. | `soha skill install --dest ~/.soha/skills k8s-sre` |
+| `skill status` | Show managed skill generation and integrity status. | `soha skill status`, `soha skill status --scope project --json` |
+| `skill update` | Update managed skills from the latest stable release. | `soha skill update`, `soha skill update --all` |
+| `skill remove` | Remove managed skills while retaining rollback state. | `soha skill remove k8s-sre` |
+| `skill rollback` | Restore the previous verified generation. | `soha skill rollback` |
+| `setup` | Configure MCP, skills, or both for an AI agent or IDE. | `soha setup --client codex --mode both`, `soha setup --client codex --check` |
+| `add` | Compatibility alias for the previous setup flow. | `soha add codex --profile local --base-url http://localhost:8080` |
 | `plugin search` | Search plugin marketplace entries. | `soha plugin search --query k8s` |
 | `plugin show` | Show marketplace, installed, or manifest details. | `soha plugin show opensoha.k8s-sre-pack --installed` |
 | `plugin install` | Install a marketplace or manifest plugin. | `soha plugin install opensoha.k8s-sre-pack --enable` |

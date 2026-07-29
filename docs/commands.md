@@ -37,11 +37,17 @@ Generated with `soha docs --format markdown`.
 | `profile use` | `soha profile use <profile>` | Switch the current profile. | `soha profile use cloud` |
 | `context show` | `soha context show [options]` | Show AI client context headers and marketplace defaults. | `soha context show` |
 | `context set` | `soha context set [options]` | Update AI client context headers and marketplace defaults. | `soha context set --skill-id k8s-sre --source codex`<br>`soha context set --marketplace https://marketplace.opensoha.com --marketplace-source-id opensoha-official` |
-| `mcp start` | `soha mcp start [options]` | Run the Soha MCP stdio server. | `soha mcp start --profile default` |
-| `mcp install` | `soha mcp install [options]` | Print MCP client configuration. | `soha mcp install --command /usr/local/bin/soha` |
-| `skill list` | `soha skill list [options]` | List local Soha skill files. | `soha skill list --source ../soha-skills` |
-| `skill install` | `soha skill install [options] [skill-id...]` | Install local Soha skill files. | `soha skill install --source ../soha-skills --dest ~/.soha/skills k8s-sre` |
-| `add` | `soha add [target] [options]` | Add Soha MCP and skills to an AI agent or IDE. | `soha add --profile local --server http://localhost:8080 --source ../soha-skills`<br>`soha add claude --profile default --server https://mcp.opensoha.com --command /usr/local/bin/soha --source ../soha-skills` |
+| `mcp` | `soha mcp [options] \| soha mcp <start\|install> [options]` | Run the Soha MCP stdio server or print client configuration. | `soha mcp`<br>`soha mcp --base-url https://soha.example.com` |
+| `mcp start` | `soha mcp start [options]` | Compatibility form of soha mcp. | `soha mcp start --profile default` |
+| `mcp install` | `soha mcp install [options]` | Print MCP client configuration. | `soha mcp install --command /usr/local/bin/soha`<br>`soha mcp install --base-url https://soha.example.com` |
+| `skill list` | `soha skill list [options]` | List skills from a local or verified release source. | `soha skill list` |
+| `skill install` | `soha skill install [options] [skill-id...]` | Install skills from a local or verified release source. | `soha skill install --dest ~/.soha/skills k8s-sre` |
+| `skill status` | `soha skill status [options]` | Show the active and previous managed skills generations. | `soha skill status`<br>`soha skill status --scope project --json` |
+| `skill update` | `soha skill update [options] [skill-id...]` | Update managed skills from the latest stable release. | `soha skill update`<br>`soha skill update --all` |
+| `skill remove` | `soha skill remove [options] <skill-id...>` | Remove managed skills with a rollback generation. | `soha skill remove k8s-sre` |
+| `skill rollback` | `soha skill rollback [options]` | Switch back to the previous verified skills generation. | `soha skill rollback` |
+| `setup` | `soha setup [target] [--client target] [--mode mcp\|skill\|both] [--scope user\|project] [options]` | Configure Soha MCP and skills for an AI agent or IDE. | `soha setup --client codex`<br>`soha setup --client codex --scope project`<br>`soha setup --client claude --mode mcp --base-url https://soha.example.com`<br>`soha setup --client codex --check` |
+| `add` | `soha add [target] [options]` | Compatibility alias for configuring Soha MCP and skills. | `soha add --profile local --server http://localhost:8080`<br>`soha add claude --profile default --server https://mcp.opensoha.com --command /usr/local/bin/soha` |
 | `plugin search` | `soha plugin search [options]` | Search plugin marketplace entries. | `soha plugin search --query k8s`<br>`soha plugin search --marketplace https://marketplace.opensoha.com --source-id opensoha-official` |
 | `plugin show` | `soha plugin show [options] <plugin-id>` | Show marketplace, installed, or manifest details. | `soha plugin show --installed opensoha.k8s-sre-pack`<br>`soha plugin show --marketplace https://marketplace.opensoha.com --version 0.1.0 opensoha.k8s-sre-pack` |
 | `plugin install` | `soha plugin install [options] [plugin-id]` | Install a marketplace or manifest plugin. | `soha plugin install --enable opensoha.k8s-sre-pack`<br>`soha plugin install --marketplace https://marketplace.opensoha.com --version 0.1.0 opensoha.k8s-sre-pack` |

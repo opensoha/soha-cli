@@ -4,15 +4,62 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type mcpTestIO struct {
+	input    *bytes.Reader
+	expected int
+	done     chan struct{}
+	once     sync.Once
+	mu       sync.Mutex
+	output   bytes.Buffer
+}
+
+func newMCPTestIO(input string, expectedResponses int) *mcpTestIO {
+	return &mcpTestIO{
+		input:    bytes.NewReader([]byte(input)),
+		expected: expectedResponses,
+		done:     make(chan struct{}),
+	}
+}
+
+func (stdio *mcpTestIO) Read(p []byte) (int, error) {
+	n, err := stdio.input.Read(p)
+	if err != io.EOF {
+		return n, err
+	}
+	select {
+	case <-stdio.done:
+	case <-time.After(3 * time.Second):
+	}
+	return 0, io.EOF
+}
+
+func (stdio *mcpTestIO) Write(p []byte) (int, error) {
+	stdio.mu.Lock()
+	defer stdio.mu.Unlock()
+	n, err := stdio.output.Write(p)
+	if bytes.Count(stdio.output.Bytes(), []byte{'\n'}) >= stdio.expected {
+		stdio.once.Do(func() { close(stdio.done) })
+	}
+	return n, err
+}
+
+func (stdio *mcpTestIO) String() string {
+	stdio.mu.Lock()
+	defer stdio.mu.Unlock()
+	return stdio.output.String()
+}
 
 func TestRunLoginStoresProfileAndRedactsShow(t *testing.T) {
 	ctx := context.Background()
@@ -2388,6 +2435,40 @@ func TestCommandDocsFileIsFresh(t *testing.T) {
 	}
 }
 
+func TestLoadMCPRuntimeProfileDefaultsToOfficialSaaS(t *testing.T) {
+	t.Setenv("SOHA_TOKEN", "ephemeral-token")
+	t.Setenv("SOHA_SERVER", "")
+	profile, err := loadMCPRuntimeProfile(context.Background(), Runtime{
+		ConfigPath: filepath.Join(t.TempDir(), "missing.json"),
+	}, "", "", "")
+	if err != nil {
+		t.Fatalf("load MCP runtime profile: %v", err)
+	}
+	if profile.ServerURL != defaultServerURL {
+		t.Fatalf("MCP server URL = %q, want official SaaS %q", profile.ServerURL, defaultServerURL)
+	}
+	if profile.AccessToken != "ephemeral-token" {
+		t.Fatalf("MCP token was not loaded from SOHA_TOKEN")
+	}
+}
+
+func TestLoadMCPRuntimeProfileRequiresExplicitSelfHostedURL(t *testing.T) {
+	t.Setenv("SOHA_TOKEN", "")
+	t.Setenv("SOHA_SERVER", "")
+	configPath := writeTestConfig(t, "https://soha.internal.example")
+	_, err := loadMCPRuntimeProfile(context.Background(), Runtime{ConfigPath: configPath}, "dev", "", "")
+	if err == nil || !strings.Contains(err.Error(), "pass --base-url https://soha.internal.example") {
+		t.Fatalf("expected explicit self-hosted URL guidance, got %v", err)
+	}
+	profile, err := loadMCPRuntimeProfile(context.Background(), Runtime{ConfigPath: configPath}, "dev", "https://soha.internal.example", "")
+	if err != nil {
+		t.Fatalf("load explicit self-hosted MCP profile: %v", err)
+	}
+	if profile.ServerURL != "https://soha.internal.example" {
+		t.Fatalf("self-hosted MCP server URL = %q", profile.ServerURL)
+	}
+}
+
 func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 	ctx := context.Background()
 	var invoked bool
@@ -2534,29 +2615,31 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 	defer server.Close()
 
 	input := strings.Join([]string{
-		`{"jsonrpc":"2.0","id":0,"method":"initialize"}`,
+		`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"soha-cli-test","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delivery.applications.list","arguments":{"search":"api"}}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"resources/list"}`,
 		`{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"soha://delivery/applications"}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"prompts/list"}`,
-		`{"jsonrpc":"2.0","id":6,"method":"prompts/get","params":{"name":"soha.delivery.plan_release","arguments":{"applicationId":"app-1"},"context":{"environmentId":"prod"}}}`,
+		`{"jsonrpc":"2.0","id":6,"method":"prompts/get","params":{"name":"soha.delivery.plan_release","arguments":{"applicationId":"app-1"},"_meta":{"soha":{"context":{"environmentId":"prod"}}}}}`,
 		"",
 	}, "\n")
-	var out bytes.Buffer
-	code := Run(ctx, []string{"mcp", "start", "--profile", "dev"}, Runtime{
-		In:         strings.NewReader(input),
-		Out:        &out,
-		Err:        &bytes.Buffer{},
-		ConfigPath: writeTestConfig(t, server.URL),
+	stdio := newMCPTestIO(input, 7)
+	var stderr bytes.Buffer
+	code := Run(ctx, []string{"mcp", "--profile", "dev", "--base-url", server.URL}, Runtime{
+		In:         stdio,
+		Out:        stdio,
+		Err:        &stderr,
+		ConfigPath: writeTestConfig(t, "https://profile-address-must-not-be-used.invalid"),
 	})
 	if code != 0 {
-		t.Fatalf("mcp start returned %d", code)
+		t.Fatalf("mcp returned %d: %s", code, stderr.String())
 	}
 	if !invoked {
 		t.Fatalf("tool invocation endpoint was not called")
 	}
-	text := out.String()
+	text := stdio.String()
 	if !strings.Contains(text, `"serverInfo":{"name":"soha","version":"0.1.0"}`) || !strings.Contains(text, `"instructions":"soha MCP is a Gateway proxy.`) || !strings.Contains(text, `permission checks`) || !strings.Contains(text, `audit`) {
 		t.Fatalf("MCP initialize response missing server info or instructions: %q", text)
 	}
@@ -2585,7 +2668,7 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 			t.Fatalf("MCP tools/list response missing soha metadata %q: %q", want, text)
 		}
 	}
-	if !strings.Contains(text, `"isError":false`) || !strings.Contains(text, "app-1") {
+	if !strings.Contains(text, "app-1") {
 		t.Fatalf("MCP tools/call response missing successful result: %q", text)
 	}
 	if !strings.Contains(text, `"uri":"soha://delivery/applications"`) || !strings.Contains(text, `"contents"`) {
@@ -2600,7 +2683,7 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 	if !strings.Contains(text, `"requiredScopes":["application","environment"]`) || !strings.Contains(text, `"soha.delivery.plan_release"`) {
 		t.Fatalf("MCP prompts/list response missing soha metadata: %q", text)
 	}
-	if !strings.Contains(text, `"arguments":[{"description":"Delivery application id.","name":"applicationId","required":true}`) || !strings.Contains(text, `"argumentSchema"`) {
+	if !strings.Contains(text, `"arguments":[{"name":"applicationId","description":"Delivery application id.","required":true}`) || !strings.Contains(text, `"argumentSchema"`) {
 		t.Fatalf("MCP prompts/list response missing prompt argument schema: %q", text)
 	}
 	if !strings.Contains(text, `"messages"`) || !strings.Contains(text, "plan release with application app-1") {
@@ -2608,40 +2691,118 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 	}
 }
 
-func TestRunMCPStartRejectsEmptyCapabilityNames(t *testing.T) {
-	var backendCalls int
+func TestRunMCPStartRedactsBackendErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		backendCalls++
+		switch r.URL.Path {
+		case "/api/v1/ai-gateway/capabilities":
+			writeJSON(t, w, map[string]any{"data": map[string]any{
+				"name": "soha AI Gateway", "version": "v1alpha1",
+				"tools": []map[string]any{{
+					"name": "test.failure", "inputSchema": map[string]any{"type": "object"},
+				}},
+				"resources": []map[string]any{{"name": "soha://test/failure"}},
+			}})
+		case "/api/v1/ai-gateway/tools/test.failure/invoke":
+			w.WriteHeader(http.StatusBadGateway)
+			writeJSON(t, w, map[string]any{"error": map[string]any{
+				"code": "tool_failed", "message": "token=tool-token-12345 password=tool-password-12345",
+			}})
+		case "/api/v1/ai-gateway/resources/read":
+			w.WriteHeader(http.StatusBadGateway)
+			writeJSON(t, w, map[string]any{"error": map[string]any{
+				"code": "resource_failed", "message": "secret=resource-secret-12345 authorization=Bearer-value",
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"soha-cli-test","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test.failure","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"soha://test/failure"}}`,
+		"",
+	}, "\n")
+	stdio := newMCPTestIO(input, 3)
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "--profile", "dev", "--base-url", server.URL}, Runtime{
+		In:         stdio,
+		Out:        stdio,
+		Err:        &stderr,
+		ConfigPath: writeTestConfig(t, server.URL),
+	})
+	if code != 0 {
+		t.Fatalf("mcp returned %d: %s", code, stderr.String())
+	}
+	output := stdio.String() + stderr.String()
+	for _, secret := range []string{"tool-token-12345", "tool-password-12345", "resource-secret-12345", "Bearer-value"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("MCP output leaked %q: %q", secret, output)
+		}
+	}
+	if strings.Count(output, "[REDACTED]") < 4 {
+		t.Fatalf("MCP output did not redact every sensitive value: %q", output)
+	}
+}
+
+func TestRedactSensitiveTextCoversAssignmentsJSONAndBearerCredentials(t *testing.T) {
+	input := `token=first password=second {"api_key":"third"} Authorization=Bearer fourth bare Bearer fifth`
+	output := redactSensitiveText(input)
+	for _, secret := range []string{"first", "second", "third", "fourth", "fifth"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("redacted text leaked %q: %q", secret, output)
+		}
+	}
+	if strings.Count(output, "[REDACTED]") != 5 {
+		t.Fatalf("unexpected redacted text %q", output)
+	}
+}
+
+func TestRunMCPStartRejectsEmptyCapabilityNames(t *testing.T) {
+	var operationCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/ai-gateway/capabilities" {
+			writeJSON(t, w, map[string]any{"data": map[string]any{
+				"name": "soha AI Gateway", "version": "v1alpha1",
+				"tools": []map[string]any{{
+					"name": "test.tool", "inputSchema": map[string]any{"type": "object"},
+				}},
+				"resources": []map[string]any{{"name": "soha://test/resource"}},
+				"prompts":   []map[string]any{{"name": "test.prompt"}},
+			}})
+			return
+		}
+		operationCalls++
 		t.Fatalf("empty MCP params should not call backend path %s", r.URL.Path)
 	}))
 	defer server.Close()
 
 	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"soha-cli-test","version":"1.0.0"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"arguments":{"search":"api"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"context":{"clusterId":"c1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"arguments":{"applicationId":"app-1"}}}`,
 		"",
 	}, "\n")
-	var out bytes.Buffer
-	code := Run(context.Background(), []string{"mcp", "start", "--profile", "dev"}, Runtime{
-		In:         strings.NewReader(input),
-		Out:        &out,
-		Err:        &bytes.Buffer{},
+	stdio := newMCPTestIO(input, 4)
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "start", "--profile", "dev", "--base-url", server.URL}, Runtime{
+		In:         stdio,
+		Out:        stdio,
+		Err:        &stderr,
 		ConfigPath: writeTestConfig(t, server.URL),
 	})
 	if code != 0 {
-		t.Fatalf("mcp start returned %d", code)
+		t.Fatalf("mcp start returned %d: %s", code, stderr.String())
 	}
-	if backendCalls != 0 {
-		t.Fatalf("backend was called %d times", backendCalls)
+	if operationCalls != 0 {
+		t.Fatalf("backend operation endpoints were called %d times", operationCalls)
 	}
-	text := out.String()
-	for _, want := range []string{
-		`"code":-32602`,
-		`tools/call requires name`,
-		`resources/read requires uri or name`,
-		`prompts/get requires name`,
-	} {
+	text := stdio.String()
+	for _, want := range []string{`"code":-32602`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("MCP validation output missing %q in %q", want, text)
 		}
@@ -2766,10 +2927,13 @@ func TestRunMCPInstallUsesCurrentProfile(t *testing.T) {
 		t.Fatalf("mcp install returned %d", code)
 	}
 	text := out.String()
-	for _, want := range []string{`"/usr/local/bin/soha"`, `"--profile"`, `"dev"`, `"--ai-client-id"`, `"codex-local"`, `"--ai-client"`, `"Codex"`, `"--skill-id"`, `"k8s-sre"`} {
+	for _, want := range []string{`"/usr/local/bin/soha"`, `"mcp"`, `"--profile"`, `"dev"`, `"--base-url"`, `"https://soha.example"`, `"--ai-client-id"`, `"codex-local"`, `"--ai-client"`, `"Codex"`, `"--skill-id"`, `"k8s-sre"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("mcp install output missing %q in %q", want, text)
 		}
+	}
+	if strings.Contains(text, `"start"`) {
+		t.Fatalf("mcp install should use the direct MCP entry point: %q", text)
 	}
 }
 
@@ -2818,6 +2982,251 @@ func TestRunSkillListAndInstall(t *testing.T) {
 	}
 }
 
+func TestRunSkillLifecycle(t *testing.T) {
+	ctx := context.Background()
+	dest := filepath.Join(t.TempDir(), "skills")
+	sourceV1 := t.TempDir()
+	writeSkill(t, sourceV1, "delivery-developer", "# Delivery Developer v1\n")
+	writeSkill(t, sourceV1, "k8s-sre", "# K8s SRE v1\n")
+
+	var stderr bytes.Buffer
+	if code := Run(ctx, []string{"skill", "install", "--source", sourceV1, "--dest", dest, "--all"}, Runtime{Out: &bytes.Buffer{}, Err: &stderr}); code != 0 {
+		t.Fatalf("skill install returned %d: %s", code, stderr.String())
+	}
+
+	sourceV2 := t.TempDir()
+	writeSkill(t, sourceV2, "delivery-developer", "# Delivery Developer v2\n")
+	writeSkill(t, sourceV2, "k8s-sre", "# K8s SRE v1\n")
+	stderr.Reset()
+	if code := Run(ctx, []string{"skill", "update", "--source", sourceV2, "--dest", dest}, Runtime{Out: &bytes.Buffer{}, Err: &stderr}); code != 0 {
+		t.Fatalf("skill update returned %d: %s", code, stderr.String())
+	}
+	assertFileContent(t, filepath.Join(dest, "delivery-developer", "SKILL.md"), "# Delivery Developer v2\n")
+
+	var statusOut bytes.Buffer
+	if code := Run(ctx, []string{"skill", "status", "--dest", dest, "--json"}, Runtime{Out: &statusOut, Err: &stderr}); code != 0 {
+		t.Fatalf("skill status returned %d: %s", code, stderr.String())
+	}
+	for _, want := range []string{`"managed": true`, `"drifted": false`, `"previous"`} {
+		if !strings.Contains(statusOut.String(), want) {
+			t.Fatalf("skill status missing %q: %s", want, statusOut.String())
+		}
+	}
+
+	stderr.Reset()
+	if code := Run(ctx, []string{"skill", "rollback", "--dest", dest}, Runtime{Out: &bytes.Buffer{}, Err: &stderr}); code != 0 {
+		t.Fatalf("skill rollback returned %d: %s", code, stderr.String())
+	}
+	assertFileContent(t, filepath.Join(dest, "delivery-developer", "SKILL.md"), "# Delivery Developer v1\n")
+
+	stderr.Reset()
+	if code := Run(ctx, []string{"skill", "remove", "--dest", dest, "delivery-developer"}, Runtime{Out: &bytes.Buffer{}, Err: &stderr}); code != 0 {
+		t.Fatalf("skill remove returned %d: %s", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(dest, "delivery-developer")); !os.IsNotExist(err) {
+		t.Fatalf("removed skill still exists: %v", err)
+	}
+	assertFileContent(t, filepath.Join(dest, "k8s-sre", "SKILL.md"), "# K8s SRE v1\n")
+
+	stderr.Reset()
+	if code := Run(ctx, []string{"skill", "rollback", "--dest", dest}, Runtime{Out: &bytes.Buffer{}, Err: &stderr}); code != 0 {
+		t.Fatalf("skill rollback after remove returned %d: %s", code, stderr.String())
+	}
+	assertFileContent(t, filepath.Join(dest, "delivery-developer", "SKILL.md"), "# Delivery Developer v1\n")
+
+	auditRaw, err := os.ReadFile(filepath.Join(skillStateRoot(dest), "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("read skill audit: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(auditRaw)), "\n")
+	if len(lines) != 7 {
+		t.Fatalf("got %d audit events, want 7: %s", len(lines), auditRaw)
+	}
+	for _, line := range lines {
+		var event skillAuditEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode audit event: %v", err)
+		}
+		if event.SchemaVersion != skillAuditEventSchema || !strings.HasPrefix(event.Checksum, "sha256:") {
+			t.Fatalf("invalid audit event: %#v", event)
+		}
+	}
+}
+
+func TestRunSkillRollbackRejectsTamperedPreviousGeneration(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "skills")
+	sourceV1 := t.TempDir()
+	writeSkill(t, sourceV1, "k8s-sre", "# K8s SRE v1\n")
+	if code := Run(context.Background(), []string{"skill", "install", "--source", sourceV1, "--dest", dest, "--all"}, Runtime{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); code != 0 {
+		t.Fatalf("initial skill install returned %d", code)
+	}
+	sourceV2 := t.TempDir()
+	writeSkill(t, sourceV2, "k8s-sre", "# K8s SRE v2\n")
+	if code := Run(context.Background(), []string{"skill", "update", "--source", sourceV2, "--dest", dest}, Runtime{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}); code != 0 {
+		t.Fatalf("skill update returned %d", code)
+	}
+	state, err := readSkillInstallState(dest)
+	if err != nil || state.Previous == nil {
+		t.Fatalf("read previous generation: %#v, %v", state, err)
+	}
+	previousSkill := filepath.Join(skillStateRoot(dest), "versions", state.Previous.ID, "k8s-sre", "SKILL.md")
+	if err := os.WriteFile(previousSkill, []byte("tampered\n"), 0o644); err != nil {
+		t.Fatalf("tamper previous generation: %v", err)
+	}
+	var stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"skill", "rollback", "--dest", dest}, Runtime{Out: &bytes.Buffer{}, Err: &stderr}); code == 0 {
+		t.Fatalf("tampered rollback unexpectedly succeeded")
+	}
+	if !strings.Contains(stderr.String(), "integrity verification") {
+		t.Fatalf("unexpected rollback error: %s", stderr.String())
+	}
+	assertFileContent(t, filepath.Join(dest, "k8s-sre", "SKILL.md"), "# K8s SRE v2\n")
+}
+
+func TestRunSetupProjectScope(t *testing.T) {
+	project := t.TempDir()
+	t.Chdir(project)
+	source := t.TempDir()
+	writeSohaAgentSkill(t, source)
+	writeSkill(t, source, "delivery-developer", "# Delivery Developer\n")
+
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{
+		"setup", "--client", "codex", "--scope", "project", "--mode", "both",
+		"--source", source, "--skills", "delivery-developer", "--command", "/opt/bin/soha",
+	}, Runtime{Out: &bytes.Buffer{}, Err: &stderr, ConfigPath: filepath.Join(t.TempDir(), "soha.json")})
+	if code != 0 {
+		t.Fatalf("project setup returned %d: %s", code, stderr.String())
+	}
+	for _, path := range []string{
+		filepath.Join(project, ".codex", "config.toml"),
+		filepath.Join(project, ".agents", "skills", "soha", "SKILL.md"),
+		filepath.Join(project, ".soha", "skills", "delivery-developer", "SKILL.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("project setup did not write %s: %v", path, err)
+		}
+	}
+}
+
+func assertFileContent(t *testing.T, path, expected string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(raw) != expected {
+		t.Fatalf("unexpected content in %s: %q", path, string(raw))
+	}
+}
+
+func TestRunSetupMCPModeAndCheck(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(t.TempDir(), "soha.json")
+	codexConfig := filepath.Join(t.TempDir(), "config.toml")
+	args := []string{
+		"setup", "--client", "codex", "--mode", "mcp",
+		"--base-url", "soha.internal.example",
+		"--codex-config", codexConfig,
+		"--command", "/opt/bin/soha",
+		"--skills-source", filepath.Join(t.TempDir(), "must-not-be-read"),
+	}
+	var out, stderr bytes.Buffer
+	if code := Run(context.Background(), args, Runtime{Out: &out, Err: &stderr, ConfigPath: configPath}); code != 0 {
+		t.Fatalf("setup mcp returned %d: %s", code, stderr.String())
+	}
+	raw, err := os.ReadFile(codexConfig)
+	if err != nil {
+		t.Fatalf("read Codex config: %v", err)
+	}
+	for _, want := range []string{
+		`[mcp_servers.soha]`,
+		`command = "/opt/bin/soha"`,
+		`args = ["mcp", "--profile", "default", "--base-url", "https://soha.internal.example"`,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("Codex MCP config missing %q:\n%s", want, string(raw))
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "soha", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("mcp-only setup wrote a skill package: %v", err)
+	}
+
+	out.Reset()
+	stderr.Reset()
+	checkArgs := append(append([]string(nil), args...), "--check")
+	if code := Run(context.Background(), checkArgs, Runtime{Out: &out, Err: &stderr, ConfigPath: configPath}); code != 0 {
+		t.Fatalf("setup check returned %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(out.String(), "Checked Codex MCP server soha") {
+		t.Fatalf("setup check output missing MCP result: %q", out.String())
+	}
+}
+
+func TestRunSetupSkillModeDoesNotWriteMCPConfig(t *testing.T) {
+	source := t.TempDir()
+	dest := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "soha.json")
+	codexConfig := filepath.Join(t.TempDir(), "config.toml")
+	writeSohaAgentSkill(t, source)
+	writeSkill(t, source, "delivery-developer", "# Delivery Developer\n")
+	args := []string{
+		"setup", "--client=codex", "--mode", "skill",
+		"--source", source,
+		"--skills", "delivery-developer",
+		"--dest", dest,
+		"--no-runtime-skills",
+		"--codex-config", codexConfig,
+		"--command", "/opt/bin/soha",
+	}
+	var out, stderr bytes.Buffer
+	if code := Run(context.Background(), args, Runtime{Out: &out, Err: &stderr, ConfigPath: configPath}); code != 0 {
+		t.Fatalf("setup skill returned %d: %s", code, stderr.String())
+	}
+	if _, err := os.Stat(codexConfig); !os.IsNotExist(err) {
+		t.Fatalf("skill-only setup wrote MCP config: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "soha", "SKILL.md")); err != nil {
+		t.Fatalf("skill-only setup did not install meta skill: %v", err)
+	}
+
+	out.Reset()
+	stderr.Reset()
+	checkArgs := append(append([]string(nil), args...), "--check")
+	if code := Run(context.Background(), checkArgs, Runtime{Out: &out, Err: &stderr, ConfigPath: configPath}); code != 0 {
+		t.Fatalf("skill setup check returned %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(out.String(), "Checked Codex Soha skill package") {
+		t.Fatalf("skill setup check output missing skill result: %q", out.String())
+	}
+}
+
+func TestRunSetupDoesNotPersistProfileWhenTargetConfigFails(t *testing.T) {
+	configPath := writeTestConfig(t, "https://before.example")
+	blockedParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedParent, []byte("blocked\n"), 0o600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{
+		"setup", "--client", "codex", "--mode", "mcp",
+		"--profile", "dev",
+		"--base-url", "https://after.example",
+		"--codex-config", filepath.Join(blockedParent, "config.toml"),
+	}, Runtime{Out: &bytes.Buffer{}, Err: &stderr, ConfigPath: configPath})
+	if code == 0 {
+		t.Fatalf("setup unexpectedly succeeded with an invalid target config path")
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload Soha config: %v", err)
+	}
+	if got := cfg.Profiles["dev"].ServerURL; got != "https://before.example" {
+		t.Fatalf("failed setup persisted profile URL %q", got)
+	}
+}
+
 func TestRunAddCodexInstallsMCPAndSkills(t *testing.T) {
 	ctx := context.Background()
 	source := t.TempDir()
@@ -2830,6 +3239,7 @@ func TestRunAddCodexInstallsMCPAndSkills(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(filepath.Dir(source), "index.json"), []byte(`{"skills":[]}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write skills index: %v", err)
 	}
+	writeSohaAgentSkill(t, source)
 	writeSkill(t, source, "delivery-developer", "# Delivery Developer\n")
 	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
 
@@ -2860,7 +3270,7 @@ func TestRunAddCodexInstallsMCPAndSkills(t *testing.T) {
 		`[mcp_servers.soha]`,
 		`type = "stdio"`,
 		`command = "/tmp/soha"`,
-		`args = ["mcp", "start", "--profile", "dev", "--ai-client-id", "profile-client", "--ai-client", "Codex", "--skill-id", "profile-skill"]`,
+		`args = ["mcp", "--profile", "dev", "--base-url", "https://soha.example", "--ai-client-id", "profile-client", "--ai-client", "Codex", "--skill-id", "profile-skill"]`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("codex config missing %q in:\n%s", want, text)
@@ -2873,7 +3283,7 @@ func TestRunAddCodexInstallsMCPAndSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read codex skill wrapper: %v", err)
 	}
-	for _, want := range []string{"name: soha", "Bash(soha capabilities*)", "`k8s-sre.md`", "`delivery-developer.md`"} {
+	for _, want := range []string{"name: soha", "# Soha", "## Create An Application Service", "delivery-developer.md"} {
 		if !strings.Contains(string(wrapper), want) {
 			t.Fatalf("wrapper missing %q in:\n%s", want, string(wrapper))
 		}
@@ -2899,6 +3309,7 @@ func TestRunAddCodexUpsertsExistingMCPSection(t *testing.T) {
 	source := t.TempDir()
 	dest := t.TempDir()
 	codexConfig := filepath.Join(t.TempDir(), "config.toml")
+	writeSohaAgentSkill(t, source)
 	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
 	initial := "[mcp_servers]\n\n[mcp_servers.soha]\ncommand = \"old\"\nargs = [\"old\"]\n\n[mcp_servers.node_repl]\ncommand = \"node\"\n"
 	if err := os.WriteFile(codexConfig, []byte(initial), 0o600); err != nil {
@@ -2938,7 +3349,7 @@ func TestRunAddCodexUpsertsExistingMCPSection(t *testing.T) {
 	for _, want := range []string{
 		`[mcp_servers.node_repl]`,
 		`command = "/opt/bin/soha"`,
-		`args = ["mcp", "start", "--profile", "local", "--ai-client-id", "codex-local", "--ai-client", "Codex", "--skill-id", "k8s-sre"]`,
+		`args = ["mcp", "--profile", "local", "--ai-client-id", "codex-local", "--ai-client", "Codex", "--skill-id", "k8s-sre"]`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q in:\n%s", want, text)
@@ -2949,6 +3360,7 @@ func TestRunAddCodexUpsertsExistingMCPSection(t *testing.T) {
 func TestRunAddCodexConfiguresProfileServer(t *testing.T) {
 	ctx := context.Background()
 	source := t.TempDir()
+	writeSohaAgentSkill(t, source)
 	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	codexConfig := filepath.Join(t.TempDir(), "config.toml")
@@ -3015,6 +3427,7 @@ func TestRunAddInteractiveSelectsTargets(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	source := t.TempDir()
+	writeSohaAgentSkill(t, source)
 	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
 	configPath := filepath.Join(t.TempDir(), "config.json")
 
@@ -3067,6 +3480,7 @@ func TestRunAddInteractiveSelectsTargets(t *testing.T) {
 func TestRunAddKiroUpdatesJSONCConfig(t *testing.T) {
 	ctx := context.Background()
 	source := t.TempDir()
+	writeSohaAgentSkill(t, source)
 	writeSkill(t, source, "k8s-sre", "# K8s SRE\n")
 	configPath := filepath.Join(t.TempDir(), "mcp.json")
 	if err := os.WriteFile(configPath, []byte("{\n  \"mcpServers\": {\n    // existing comment\n    \"old\": {\"command\": \"old\", \"args\": []}\n  }\n}\n"), 0o600); err != nil {
@@ -3144,6 +3558,22 @@ func writeSkill(t *testing.T, root, name, content string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write skill: %v", err)
+	}
+}
+
+func writeSohaAgentSkill(t *testing.T, source string) {
+	t.Helper()
+	root := filepath.Join(source, "agent-skills", "soha")
+	if err := os.MkdirAll(filepath.Join(root, "agents"), 0o755); err != nil {
+		t.Fatalf("create Soha agent skill fixture: %v", err)
+	}
+	markdown := "---\nname: soha\ndescription: Use Soha MCP and delivery workflows.\n---\n\n# Soha\n\n## Create An Application Service\n\nRead delivery-developer.md.\n"
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte(markdown), 0o644); err != nil {
+		t.Fatalf("write Soha agent skill fixture: %v", err)
+	}
+	openai := "interface:\n  display_name: \"Soha\"\n  short_description: \"Soha workflows\"\n  default_prompt: \"Use $soha for delivery work.\"\n"
+	if err := os.WriteFile(filepath.Join(root, "agents", "openai.yaml"), []byte(openai), 0o644); err != nil {
+		t.Fatalf("write Soha agent metadata fixture: %v", err)
 	}
 }
 
