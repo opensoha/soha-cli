@@ -3,9 +3,6 @@
 This package is a thin, verified launcher for the official native `soha` CLI.
 It does not reimplement Soha or MCP in JavaScript.
 
-It becomes available from npm when the first tagged Soha CLI release publishes
-`@opensoha/cli`; use the native GitHub Release binary until then.
-
 ```bash
 npx -y @opensoha/cli@latest mcp
 npx -y @opensoha/cli@latest mcp --base-url https://soha.example.com

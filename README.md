@@ -16,10 +16,7 @@ npx -y @opensoha/cli@latest mcp
 npx -y @opensoha/cli@latest setup --client codex --mode both
 ```
 
-The npm launcher is published by the tagged release workflow. Until the first
-`@opensoha/cli` release is present in the npm registry, install the native
-GitHub Release binary instead; an npm `E404` means the package has not been
-published yet.
+The npm launcher is published by the tagged release workflow.
 
 The npm package does not implement MCP in JavaScript. It downloads the native
 binary from the matching GitHub release, verifies `checksums.txt`, caches it by
