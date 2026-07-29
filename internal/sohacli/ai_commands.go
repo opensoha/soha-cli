@@ -282,34 +282,36 @@ func runAIMemoryDelete(ctx context.Context, args []string, rt Runtime) error {
 	if err := gatewayClient(rt, profile).DeleteMemory(ctx, fs.Args()[0], gatewayHeaders(profile, "", "", "memory-privacy-curator", "soha-cli")); err != nil {
 		return err
 	}
-	fmt.Fprintf(rt.Out, "profile: %s\noperation: memory-deleted\nid: %s\n", profileName, strings.TrimSpace(fs.Args()[0]))
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "profile: %s\noperation: memory-deleted\nid: %s\n", profileName, strings.TrimSpace(fs.Args()[0]))
+	return err
 }
 
 func writeAIOperationOutput(rt Runtime, format, profileName, operation string, item map[string]any) error {
 	if format == "json" || format == "yaml" {
 		return writeStructuredOutput(rt.Out, format, sanitizeCLIValue(item))
 	}
-	fmt.Fprintf(rt.Out, "profile: %s\noperation: %s\n", profileName, operation)
-	writeAISummaryFields(rt, item)
-	return nil
+	out := newCheckedWriter(rt.Out)
+	out.Printf("profile: %s\noperation: %s\n", profileName, operation)
+	writeAISummaryFields(out, item)
+	return out.Err()
 }
 
 func writeAICollectionOutput(rt Runtime, format, profileName, collection string, items []map[string]any) error {
 	if format == "json" || format == "yaml" {
 		return writeStructuredOutput(rt.Out, format, sanitizeCLIValue(items))
 	}
-	fmt.Fprintf(rt.Out, "profile: %s\ncollection: %s\ncount: %d\n", profileName, collection, len(items))
+	out := newCheckedWriter(rt.Out)
+	out.Printf("profile: %s\ncollection: %s\ncount: %d\n", profileName, collection, len(items))
 	for index, item := range items {
-		fmt.Fprintf(rt.Out, "%d. ", index+1)
-		writeAISummaryFields(rt, item)
+		out.Printf("%d. ", index+1)
+		writeAISummaryFields(out, item)
 	}
-	return nil
+	return out.Err()
 }
 
-func writeAISummaryFields(rt Runtime, item map[string]any) {
+func writeAISummaryFields(out *checkedWriter, item map[string]any) {
 	if len(item) == 0 {
-		fmt.Fprintln(rt.Out, "status: accepted")
+		out.Println("status: accepted")
 		return
 	}
 	fields := []string{"id", "name", "kind", "status", "stage", "decision", "revisionId", "operationId", "runId"}
@@ -320,15 +322,15 @@ func writeAISummaryFields(rt Runtime, item map[string]any) {
 			continue
 		}
 		if wrote {
-			fmt.Fprint(rt.Out, "\t")
+			out.Print("\t")
 		}
-		fmt.Fprintf(rt.Out, "%s=%v", field, sanitizeCLIValue(value))
+		out.Printf("%s=%v", field, sanitizeCLIValue(value))
 		wrote = true
 	}
 	if !wrote {
-		fmt.Fprint(rt.Out, "status=accepted")
+		out.Print("status=accepted")
 	}
-	fmt.Fprintln(rt.Out)
+	out.Println()
 }
 
 func setQueryValue(query url.Values, key, value string) {

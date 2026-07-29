@@ -8,6 +8,7 @@ import (
 )
 
 func runProfile(args []string, rt Runtime) error {
+	out := newCheckedWriter(rt.Out)
 	if len(args) == 0 {
 		args = []string{"show"}
 	}
@@ -27,7 +28,7 @@ func runProfile(args []string, rt Runtime) error {
 			if name == cfg.CurrentProfile {
 				marker = "*"
 			}
-			fmt.Fprintf(rt.Out, "%s %s\t%s\n", marker, name, cfg.Profiles[name].ServerURL)
+			out.Printf("%s %s\t%s\n", marker, name, cfg.Profiles[name].ServerURL)
 		}
 	case "use":
 		if len(args) < 2 {
@@ -41,7 +42,7 @@ func runProfile(args []string, rt Runtime) error {
 		if err := saveConfig(rt.ConfigPath, cfg); err != nil {
 			return err
 		}
-		fmt.Fprintf(rt.Out, "Current profile: %s\n", name)
+		out.Printf("Current profile: %s\n", name)
 	case "show":
 		name := profileName(firstArg(args[1:], cfg.CurrentProfile))
 		profile, ok := cfg.Profiles[name]
@@ -55,7 +56,7 @@ func runProfile(args []string, rt Runtime) error {
 	default:
 		return fmt.Errorf("unknown profile command %q", args[0])
 	}
-	return nil
+	return out.Err()
 }
 
 func runContext(_ context.Context, args []string, rt Runtime) error {
@@ -121,8 +122,8 @@ func runContext(_ context.Context, args []string, rt Runtime) error {
 		if err := saveConfig(rt.ConfigPath, cfg); err != nil {
 			return err
 		}
-		fmt.Fprintf(rt.Out, "Updated context for profile %s\n", name)
-		return nil
+		_, err = fmt.Fprintf(rt.Out, "Updated context for profile %s\n", name)
+		return err
 	default:
 		return fmt.Errorf("unknown context command %q", args[0])
 	}

@@ -75,8 +75,8 @@ func runPluginInstall(ctx context.Context, args []string, rt Runtime) error {
 	if *jsonOutput {
 		return writePrettyJSON(rt.Out, item)
 	}
-	fmt.Fprintf(rt.Out, "Installed plugin %s %s (%s)\n", item.ID, item.Version, item.Status)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Installed plugin %s %s (%s)\n", item.ID, item.Version, item.Status)
+	return err
 }
 
 func runPluginEnable(ctx context.Context, args []string, rt Runtime) error {
@@ -116,8 +116,8 @@ func runPluginAction(ctx context.Context, args []string, rt Runtime, action stri
 	if *jsonOutput {
 		return writePrettyJSON(rt.Out, item)
 	}
-	fmt.Fprintf(rt.Out, "%sd plugin %s (%s)\n", strings.ToUpper(action[:1])+action[1:], item.ID, item.Status)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "%sd plugin %s (%s)\n", strings.ToUpper(action[:1])+action[1:], item.ID, item.Status)
+	return err
 }
 
 func runPluginUpgrade(ctx context.Context, args []string, rt Runtime) error {
@@ -160,8 +160,8 @@ func runPluginUpgrade(ctx context.Context, args []string, rt Runtime) error {
 	if *jsonOutput {
 		return writePrettyJSON(rt.Out, item)
 	}
-	fmt.Fprintf(rt.Out, "Upgraded plugin %s to %s\n", item.ID, item.Version)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Upgraded plugin %s to %s\n", item.ID, item.Version)
+	return err
 }
 
 func runPluginConfig(ctx context.Context, args []string, rt Runtime) error {
@@ -209,8 +209,8 @@ func runPluginConfig(ctx context.Context, args []string, rt Runtime) error {
 	if *jsonOutput {
 		return writePrettyJSON(rt.Out, item)
 	}
-	fmt.Fprintf(rt.Out, "Configured plugin %s\n", item.ID)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Configured plugin %s\n", item.ID)
+	return err
 }
 
 func runPluginRemove(ctx context.Context, args []string, rt Runtime) error {
@@ -230,8 +230,8 @@ func runPluginRemove(ctx context.Context, args []string, rt Runtime) error {
 	if err := gatewayClient(rt, profile).RemovePlugin(ctx, pluginID, gatewayHeaders(profile, "", "", "", "soha-cli")); err != nil {
 		return err
 	}
-	fmt.Fprintf(rt.Out, "Removed plugin %s\n", pluginID)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Removed plugin %s\n", pluginID)
+	return err
 }
 
 type pluginInstallOptions struct {
@@ -272,6 +272,7 @@ func pluginInstallRequest(options pluginInstallOptions) (PluginInstallRequest, e
 }
 
 func readPluginManifest(path string) (PluginManifest, error) {
+	// #nosec G304 -- path is explicitly supplied through the --manifest CLI option.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return PluginManifest{}, err

@@ -35,7 +35,6 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.9.0
-          only-new-issues: true
           args: --timeout=5m
       - name: Build
         run: GOWORK=off CGO_ENABLED=0 go build -o /tmp/soha ./cmd/soha

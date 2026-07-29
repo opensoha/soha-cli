@@ -13,7 +13,9 @@ import (
 func readPassword(rt Runtime) (string, error) {
 	if file, ok := rt.In.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
 		raw, err := term.ReadPassword(int(file.Fd()))
-		fmt.Fprintln(rt.Err)
+		if _, writeErr := fmt.Fprintln(rt.Err); writeErr != nil && err == nil {
+			err = writeErr
+		}
 		if err != nil {
 			return "", err
 		}

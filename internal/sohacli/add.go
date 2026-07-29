@@ -127,11 +127,15 @@ func runAdd(ctx context.Context, args []string, rt Runtime) error {
 
 func promptAddTargets(rt Runtime) ([]addTargetSpec, error) {
 	targets := addSelectableTargets()
-	fmt.Fprintln(rt.Out, "Select AI agents or IDEs to add Soha MCP and skills:")
+	out := newCheckedWriter(rt.Out)
+	out.Println("Select AI agents or IDEs to add Soha MCP and skills:")
 	for i, spec := range targets {
-		fmt.Fprintf(rt.Out, "  %d) %s (%s)\n", i+1, spec.DisplayName, spec.Name)
+		out.Printf("  %d) %s (%s)\n", i+1, spec.DisplayName, spec.Name)
 	}
-	fmt.Fprint(rt.Out, "Enter numbers or names separated by commas, or all: ")
+	out.Print("Enter numbers or names separated by commas, or all: ")
+	if err := out.Err(); err != nil {
+		return nil, err
+	}
 	line, err := bufio.NewReader(rt.In).ReadString('\n')
 	if err != nil && strings.TrimSpace(line) == "" {
 		return nil, err
@@ -202,11 +206,8 @@ func parsePositiveIndex(value string) (int, bool) {
 	return n, value != ""
 }
 
-func runAddCodex(ctx context.Context, args []string, rt Runtime) error {
-	return runAddTarget(ctx, args, rt, mustAddTarget("codex"), map[string]string{})
-}
-
 func runAddTarget(ctx context.Context, args []string, rt Runtime, target addTargetSpec, resolvedSources map[string]string) error {
+	out := newCheckedWriter(rt.Out)
 	fs := newRuntimeFlagSet("add "+target.Name, args, rt)
 	modeFlag := fs.String("mode", string(setupModeBoth), "components to configure: mcp, skill, or both")
 	scopeFlag := fs.String("scope", "user", "configuration scope: user or project")
@@ -264,7 +265,7 @@ func runAddTarget(ctx context.Context, args []string, rt Runtime, target addTarg
 	skillID := firstNonEmptyString(*skillIDFlag, profileConfig.SkillID)
 	serverURL := normalizeServerURL(firstNonEmptyString(*serverFlag, *baseURLFlag, profileConfig.ServerURL, defaultServerURL))
 	if serverURL == "" {
-		return fmt.Errorf("Soha API base URL is required")
+		return fmt.Errorf("soha API base URL is required")
 	}
 	updatedProfile := profileConfig
 	updatedProfile.ServerURL = serverURL
@@ -339,55 +340,55 @@ func runAddTarget(ctx context.Context, args []string, rt Runtime, target addTarg
 
 	if *checkFlag {
 		if !profileExists {
-			return fmt.Errorf("Soha profile %q is not configured", profileNameValue)
+			return fmt.Errorf("soha profile %q is not configured", profileNameValue)
 		}
 		if updatedProfile != profileConfig {
-			return fmt.Errorf("Soha profile %q does not match the requested setup", profileNameValue)
+			return fmt.Errorf("soha profile %q does not match the requested setup", profileNameValue)
 		}
-		fmt.Fprintf(rt.Out, "Checked Soha profile %s: %s\n", profileNameValue, serverURL)
+		out.Printf("Checked Soha profile %s: %s\n", profileNameValue, serverURL)
 		if installMCP {
 			if err := verifyMCPConfig(target, targetConfigPath, mcpName, command, mcpArgs, mcpBlock); err != nil {
 				return err
 			}
-			fmt.Fprintf(rt.Out, "Checked %s MCP server %s in %s\n", target.DisplayName, mcpName, targetConfigPath)
+			out.Printf("Checked %s MCP server %s in %s\n", target.DisplayName, mcpName, targetConfigPath)
 		}
 		if installSkills {
 			if err := verifySohaSkillPackage(source, skillDest, skillNames); err != nil {
 				return err
 			}
-			fmt.Fprintf(rt.Out, "Checked %s Soha skill package in %s\n", target.DisplayName, filepath.Join(skillDest, "soha"))
+			out.Printf("Checked %s Soha skill package in %s\n", target.DisplayName, filepath.Join(skillDest, "soha"))
 			if !*noRuntimeSkillsFlag {
 				if err := verifyRuntimeSkills(source, runtimeSkillDest, skillNames); err != nil {
 					return err
 				}
-				fmt.Fprintf(rt.Out, "Checked Soha runtime skills in %s\n", runtimeSkillDest)
+				out.Printf("Checked Soha runtime skills in %s\n", runtimeSkillDest)
 			}
 		}
-		return nil
+		return out.Err()
 	}
 
 	if *dryRunFlag {
 		if !profileExists || updatedProfile != profileConfig {
-			fmt.Fprintf(rt.Out, "Would configure Soha profile %s with API base URL: %s\n", profileNameValue, serverURL)
+			out.Printf("Would configure Soha profile %s with API base URL: %s\n", profileNameValue, serverURL)
 		} else {
-			fmt.Fprintf(rt.Out, "Soha profile %s already uses API base URL: %s\n", profileNameValue, serverURL)
+			out.Printf("Soha profile %s already uses API base URL: %s\n", profileNameValue, serverURL)
 		}
 		if installMCP {
 			if target.ConfigKind == "toml" {
-				fmt.Fprintf(rt.Out, "Would update %s MCP config: %s\n\n%s\n", target.DisplayName, targetConfigPath, mcpBlock)
+				out.Printf("Would update %s MCP config: %s\n\n%s\n", target.DisplayName, targetConfigPath, mcpBlock)
 			} else {
-				fmt.Fprintf(rt.Out, "Would update %s MCP config: %s\n", target.DisplayName, targetConfigPath)
-				fmt.Fprintf(rt.Out, "Would set mcpServers.%s command=%s args=%s\n", mcpName, command, strings.Join(mcpArgs, " "))
+				out.Printf("Would update %s MCP config: %s\n", target.DisplayName, targetConfigPath)
+				out.Printf("Would set mcpServers.%s command=%s args=%s\n", mcpName, command, strings.Join(mcpArgs, " "))
 			}
 		}
 		if installSkills {
-			fmt.Fprintf(rt.Out, "Would install %s Soha skill package: %s\n", target.DisplayName, filepath.Join(skillDest, "soha", "SKILL.md"))
-			fmt.Fprintf(rt.Out, "Would copy skill references from %s: %s\n", sourceRef, strings.Join(skillNames, ", "))
+			out.Printf("Would install %s Soha skill package: %s\n", target.DisplayName, filepath.Join(skillDest, "soha", "SKILL.md"))
+			out.Printf("Would copy skill references from %s: %s\n", sourceRef, strings.Join(skillNames, ", "))
 			if !*noRuntimeSkillsFlag {
-				fmt.Fprintf(rt.Out, "Would install Soha runtime skills to %s: %s\n", runtimeSkillDest, strings.Join(skillNames, ", "))
+				out.Printf("Would install Soha runtime skills to %s: %s\n", runtimeSkillDest, strings.Join(skillNames, ", "))
 			}
 		}
-		return nil
+		return out.Err()
 	}
 
 	if installMCP {
@@ -405,12 +406,12 @@ func runAddTarget(ctx context.Context, args []string, rt Runtime, target addTarg
 			}
 		}
 		if changed {
-			fmt.Fprintf(rt.Out, "Configured %s MCP server %s in %s\n", target.DisplayName, mcpName, targetConfigPath)
+			out.Printf("Configured %s MCP server %s in %s\n", target.DisplayName, mcpName, targetConfigPath)
 			if backupPath != "" {
-				fmt.Fprintf(rt.Out, "Backed up previous %s config to %s\n", target.DisplayName, backupPath)
+				out.Printf("Backed up previous %s config to %s\n", target.DisplayName, backupPath)
 			}
 		} else {
-			fmt.Fprintf(rt.Out, "%s MCP server %s already up to date in %s\n", target.DisplayName, mcpName, targetConfigPath)
+			out.Printf("%s MCP server %s already up to date in %s\n", target.DisplayName, mcpName, targetConfigPath)
 		}
 	}
 
@@ -420,7 +421,7 @@ func runAddTarget(ctx context.Context, args []string, rt Runtime, target addTarg
 			return err
 		}
 		for _, path := range installed {
-			fmt.Fprintf(rt.Out, "Installed %s Soha skill file %s\n", target.DisplayName, path)
+			out.Printf("Installed %s Soha skill file %s\n", target.DisplayName, path)
 		}
 
 		if !*noRuntimeSkillsFlag {
@@ -429,10 +430,10 @@ func runAddTarget(ctx context.Context, args []string, rt Runtime, target addTarg
 				return err
 			}
 			if !changed {
-				fmt.Fprintf(rt.Out, "Soha runtime skills already up to date in %s\n", runtimeSkillDest)
+				out.Printf("Soha runtime skills already up to date in %s\n", runtimeSkillDest)
 			} else {
 				for _, name := range generation.Skills {
-					fmt.Fprintf(rt.Out, "Installed Soha runtime skill %s to %s\n", name, filepath.Join(runtimeSkillDest, name, "SKILL.md"))
+					out.Printf("Installed Soha runtime skill %s to %s\n", name, filepath.Join(runtimeSkillDest, name, "SKILL.md"))
 				}
 			}
 		}
@@ -443,17 +444,17 @@ func runAddTarget(ctx context.Context, args []string, rt Runtime, target addTarg
 		if err := saveConfig(rt.ConfigPath, cfg); err != nil {
 			return err
 		}
-		fmt.Fprintf(rt.Out, "Configured Soha profile %s with API base URL %s\n", profileNameValue, serverURL)
+		out.Printf("Configured Soha profile %s with API base URL %s\n", profileNameValue, serverURL)
 	} else {
-		fmt.Fprintf(rt.Out, "Soha profile %s already uses API base URL %s\n", profileNameValue, serverURL)
+		out.Printf("Soha profile %s already uses API base URL %s\n", profileNameValue, serverURL)
 	}
 
 	if strings.TrimSpace(target.RestartMessage) != "" {
-		fmt.Fprintln(rt.Out, target.RestartMessage)
+		out.Println(target.RestartMessage)
 	} else {
-		fmt.Fprintf(rt.Out, "Restart %s or open a new session so MCP servers and skills are reloaded.\n", target.DisplayName)
+		out.Printf("Restart %s or open a new session so MCP servers and skills are reloaded.\n", target.DisplayName)
 	}
-	return nil
+	return out.Err()
 }
 
 func addTargetDefaultsForScope(target addTargetSpec, scope string) (string, string, error) {
@@ -713,6 +714,7 @@ func upsertCodexMCPConfig(path, section, block string) (string, bool, error) {
 	if statErr == nil {
 		mode = stat.Mode().Perm()
 		var err error
+		// #nosec G304 -- path is the explicit target client configuration selected by the user.
 		raw, err = os.ReadFile(path)
 		if err != nil {
 			return "", false, err
@@ -850,6 +852,7 @@ func readOptionalFile(path string) ([]byte, fs.FileMode, error, error) {
 		return nil, mode, statErr, statErr
 	}
 	mode = stat.Mode().Perm()
+	// #nosec G304 -- path is the explicit target client configuration selected by the user.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, mode, statErr, err
@@ -894,7 +897,7 @@ func stripJSONComments(raw []byte) []byte {
 		}
 		if ch == '/' && i+1 < len(raw) && raw[i+1] == '*' {
 			i += 2
-			for i+1 < len(raw) && !(raw[i] == '*' && raw[i+1] == '/') {
+			for i+1 < len(raw) && (raw[i] != '*' || raw[i+1] != '/') {
 				if raw[i] == '\n' {
 					out = append(out, '\n')
 				}
@@ -949,10 +952,12 @@ func sohaSkillPackageFiles(source, dest string, skillNames []string) (map[string
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G304 -- agentSkillSource is discovered inside the verified skills package.
 	skillMarkdown, err := os.ReadFile(filepath.Join(agentSkillSource, "SKILL.md"))
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G304 -- agentSkillSource is discovered inside the verified skills package.
 	openAIYAML, err := os.ReadFile(filepath.Join(agentSkillSource, "agents", "openai.yaml"))
 	if err != nil {
 		return nil, err
@@ -962,10 +967,12 @@ func sohaSkillPackageFiles(source, dest string, skillNames []string) (map[string
 		filepath.Join(root, "agents", "openai.yaml"): openAIYAML,
 	}
 	indexPath := filepath.Join(filepath.Dir(source), "index.json")
+	// #nosec G304 -- indexPath is adjacent to the verified skills source.
 	if raw, err := os.ReadFile(indexPath); err == nil {
 		writes[filepath.Join(root, "references", "skills", "index.json")] = raw
 	}
 	for _, name := range skillNames {
+		// #nosec G304 -- name is validated and source is the verified skills directory.
 		raw, err := os.ReadFile(filepath.Join(source, name, "SKILL.md"))
 		if err != nil {
 			return nil, err
@@ -1024,12 +1031,13 @@ func verifySohaSkillPackage(source, dest string, skillNames []string) error {
 		return err
 	}
 	for path, expected := range writes {
+		// #nosec G304 -- path is generated from the selected destination and verified package manifest.
 		actual, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("Soha skill file is missing: %s", path)
+			return fmt.Errorf("soha skill file is missing: %s", path)
 		}
 		if !bytes.Equal(actual, expected) {
-			return fmt.Errorf("Soha skill file is stale: %s", path)
+			return fmt.Errorf("soha skill file is stale: %s", path)
 		}
 	}
 	return nil
@@ -1037,24 +1045,26 @@ func verifySohaSkillPackage(source, dest string, skillNames []string) error {
 
 func verifyRuntimeSkills(source, dest string, skillNames []string) error {
 	for _, name := range skillNames {
+		// #nosec G304 -- name is validated and source is the verified skills directory.
 		expected, err := os.ReadFile(filepath.Join(source, name, "SKILL.md"))
 		if err != nil {
 			return err
 		}
 		path := filepath.Join(dest, name, "SKILL.md")
+		// #nosec G304 -- path is generated from the selected destination and validated skill name.
 		actual, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("Soha runtime skill is missing: %s", path)
+			return fmt.Errorf("soha runtime skill is missing: %s", path)
 		}
 		if !bytes.Equal(actual, expected) {
-			return fmt.Errorf("Soha runtime skill is stale: %s", path)
+			return fmt.Errorf("soha runtime skill is stale: %s", path)
 		}
 	}
 	return nil
 }
 
 func writeGeneratedFile(path string, raw []byte, overwrite bool) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	flag := os.O_WRONLY | os.O_CREATE
@@ -1063,16 +1073,17 @@ func writeGeneratedFile(path string, raw []byte, overwrite bool) error {
 	} else {
 		flag |= os.O_EXCL
 	}
-	file, err := os.OpenFile(path, flag, fs.FileMode(0o644))
+	// #nosec G304 -- path is a generated file destination selected by the user.
+	file, err := os.OpenFile(path, flag, fs.FileMode(0o600))
 	if err != nil {
 		if os.IsExist(err) {
 			return fmt.Errorf("%s already exists; pass --overwrite=true to replace it", path)
 		}
 		return err
 	}
-	defer file.Close()
 	if _, err := file.Write(raw); err != nil {
+		_ = file.Close()
 		return err
 	}
-	return nil
+	return file.Close()
 }

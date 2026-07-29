@@ -182,6 +182,6 @@ func runServiceAccountTokenRevoke(ctx context.Context, args []string, rt Runtime
 	if err := gatewayClient(rt, profile).RevokeServiceAccountToken(ctx, id, gatewayHeaders(profile, "", "", "", "")); err != nil {
 		return err
 	}
-	fmt.Fprintf(rt.Out, "Revoked service account token %s\n", id)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Revoked service account token %s\n", id)
+	return err
 }

@@ -118,17 +118,17 @@ func resolveSkillSource(ctx context.Context, source string, rt Runtime) (string,
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+	if err := os.MkdirAll(cacheRoot, 0o700); err != nil {
 		return "", fmt.Errorf("create skills cache: %w", err)
 	}
 	stageDir, err := os.MkdirTemp(cacheRoot, ".resolve-")
 	if err != nil {
 		return "", fmt.Errorf("create skills staging directory: %w", err)
 	}
-	defer os.RemoveAll(stageDir)
+	defer func() { _ = os.RemoveAll(stageDir) }()
 
 	packageDir := filepath.Join(stageDir, "package")
-	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+	if err := os.MkdirAll(packageDir, 0o700); err != nil {
 		return "", err
 	}
 	artifactName := sourceBaseName(spec.Artifact)
@@ -193,10 +193,10 @@ func resolveSkillSource(ctx context.Context, source string, rt Runtime) (string,
 		return "", err
 	}
 	markerBytes = append(markerBytes, '\n')
-	if err := os.WriteFile(filepath.Join(stageDir, ".verified.json"), markerBytes, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(stageDir, ".verified.json"), markerBytes, 0o600); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(finalDir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(finalDir), 0o700); err != nil {
 		return "", err
 	}
 	if err := os.Rename(stageDir, finalDir); err != nil {
@@ -275,7 +275,7 @@ func resolveLatestGitHubSkillRelease(ctx context.Context, rt Runtime, owner, rep
 	if err != nil {
 		return skillReleaseSpec{}, fmt.Errorf("resolve latest GitHub skills release for %s/%s: %w", owner, repository, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.Request != nil && response.Request.URL.Scheme == "http" && !isLoopbackHost(response.Request.URL.Hostname()) {
 		return skillReleaseSpec{}, fmt.Errorf("resolve latest GitHub skills release for %s/%s: redirected to insecure HTTP", owner, repository)
 	}
@@ -416,7 +416,7 @@ func materializeSkillReleaseAsset(ctx context.Context, rt Runtime, source, dest 
 		if err != nil {
 			return fmt.Errorf("download skills release asset %s: %w", source, err)
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		if response.Request.URL.Scheme == "http" && !isLoopbackHost(response.Request.URL.Hostname()) {
 			return fmt.Errorf("download skills release asset %s: redirected to insecure HTTP", source)
 		}
@@ -432,11 +432,12 @@ func materializeSkillReleaseAsset(ctx context.Context, rt Runtime, source, dest 
 		return nil
 	}
 
+	// #nosec G304 -- source is the explicit local release asset selected by the user.
 	file, err := os.Open(source)
 	if err != nil {
 		return fmt.Errorf("open skills release asset %s: %w", source, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if err := writeBoundedFile(dest, file, maxBytes); err != nil {
 		return fmt.Errorf("copy skills release asset %s: %w", source, err)
 	}
@@ -444,6 +445,7 @@ func materializeSkillReleaseAsset(ctx context.Context, rt Runtime, source, dest 
 }
 
 func writeBoundedFile(dest string, reader io.Reader, maxBytes int64) error {
+	// #nosec G304 -- dest is a staging path created under the private skills cache.
 	file, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
@@ -713,19 +715,20 @@ func verifiedSkillSourcePath(cacheDir string) (string, error) {
 }
 
 func extractVerifiedSkillsRelease(artifactPath, extractRoot string, metadata skillReleaseMetadata) error {
-	if err := os.MkdirAll(extractRoot, 0o755); err != nil {
+	if err := os.MkdirAll(extractRoot, 0o700); err != nil {
 		return err
 	}
+	// #nosec G304 -- artifactPath is a checksum-verified file in the private staging directory.
 	artifact, err := os.Open(artifactPath)
 	if err != nil {
 		return err
 	}
-	defer artifact.Close()
+	defer func() { _ = artifact.Close() }()
 	compressed, err := gzip.NewReader(artifact)
 	if err != nil {
 		return fmt.Errorf("open skills release gzip stream: %w", err)
 	}
-	defer compressed.Close()
+	defer func() { _ = compressed.Close() }()
 
 	expected := make(map[string]string, len(metadata.Manifest.Files)+1)
 	manifestMember := "soha-skills/" + strings.TrimSuffix(metadata.Manifest.Artifact, ".tar.gz") + ".manifest.json"
@@ -747,7 +750,7 @@ func extractVerifiedSkillsRelease(artifactPath, extractRoot string, metadata ski
 		if len(seen) >= maxSkillsReleaseFiles+1 {
 			return fmt.Errorf("skills release archive exceeds the %d-file limit", maxSkillsReleaseFiles+1)
 		}
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+		if header.Typeflag != tar.TypeReg {
 			return fmt.Errorf("skills release member %q is not a regular file", header.Name)
 		}
 		if !isSafeReleasePath(header.Name) || !strings.HasPrefix(header.Name, "soha-skills/") {
@@ -768,10 +771,11 @@ func extractVerifiedSkillsRelease(artifactPath, extractRoot string, metadata ski
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o700); err != nil {
 			return err
 		}
-		file, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		// #nosec G304 -- destPath passed safeReleaseDestination containment checks.
+		file, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return err
 		}
@@ -788,6 +792,7 @@ func extractVerifiedSkillsRelease(artifactPath, extractRoot string, metadata ski
 			return fmt.Errorf("skills release member %q is truncated", header.Name)
 		}
 		if header.Name == manifestMember {
+			// #nosec G304 -- destPath passed safeReleaseDestination containment checks.
 			memberBytes, err := os.ReadFile(destPath)
 			if err != nil {
 				return err
@@ -879,15 +884,13 @@ func parseSemverTriple(value string) ([3]int, bool) {
 	if len(parts) != 3 {
 		return [3]int{}, false
 	}
-	var out [3]int
-	for index, part := range parts {
-		parsed, err := strconv.Atoi(part)
-		if err != nil || parsed < 0 {
-			return [3]int{}, false
-		}
-		out[index] = parsed
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	patch, patchErr := strconv.Atoi(parts[2])
+	if majorErr != nil || minorErr != nil || patchErr != nil || major < 0 || minor < 0 || patch < 0 {
+		return [3]int{}, false
 	}
-	return out, true
+	return [3]int{major, minor, patch}, true
 }
 
 func compareSemverTriple(left, right [3]int) int {
@@ -936,11 +939,12 @@ func safeReleaseDestination(root, member string) (string, error) {
 }
 
 func readBoundedFile(filePath string, maxBytes int64) ([]byte, error) {
+	// #nosec G304 -- filePath is a verified release metadata path bounded by maxBytes.
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
 		return nil, err
@@ -977,11 +981,12 @@ func isLoopbackHost(host string) bool {
 }
 
 func sha256File(filePath string) (string, error) {
+	// #nosec G304 -- filePath is a verified release asset path selected by the resolver.
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err

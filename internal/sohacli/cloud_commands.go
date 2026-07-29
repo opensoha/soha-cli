@@ -69,34 +69,34 @@ func runCloudFleetDiagnostics(ctx context.Context, args []string, rt Runtime) er
 	case "yaml":
 		return writeYAML(rt.Out, diagnostics)
 	case "summary":
-		writeCloudFleetDiagnosticsSummary(rt, profileName, diagnostics)
-		return nil
+		return writeCloudFleetDiagnosticsSummary(rt, profileName, diagnostics)
 	default:
 		return fmt.Errorf("unsupported output format %q", formatValue)
 	}
 }
 
-func writeCloudFleetDiagnosticsSummary(rt Runtime, profileName string, diagnostics CloudFleetCapabilityDiagnostics) {
-	fmt.Fprintf(rt.Out, "profile: %s\n", profileName)
-	fmt.Fprintf(rt.Out, "tenant: %s\nfleet: %s\nmode: %s\nstatus: %s\n", diagnostics.TenantID, diagnostics.FleetID, diagnostics.Mode, diagnostics.Status)
-	fmt.Fprintf(rt.Out, "clusters: total=%d available=%d degraded=%d unknown=%d\n",
+func writeCloudFleetDiagnosticsSummary(rt Runtime, profileName string, diagnostics CloudFleetCapabilityDiagnostics) error {
+	out := newCheckedWriter(rt.Out)
+	out.Printf("profile: %s\n", profileName)
+	out.Printf("tenant: %s\nfleet: %s\nmode: %s\nstatus: %s\n", diagnostics.TenantID, diagnostics.FleetID, diagnostics.Mode, diagnostics.Status)
+	out.Printf("clusters: total=%d available=%d degraded=%d unknown=%d\n",
 		diagnostics.ClusterStatusCounts.Total,
 		diagnostics.ClusterStatusCounts.Available,
 		diagnostics.ClusterStatusCounts.Degraded,
 		diagnostics.ClusterStatusCounts.Unknown,
 	)
-	fmt.Fprintf(rt.Out, "capabilities: available=%d partial=%d unsupported=%d\n",
+	out.Printf("capabilities: available=%d partial=%d unsupported=%d\n",
 		diagnostics.CapabilityStatusCounts.Available,
 		diagnostics.CapabilityStatusCounts.Partial,
 		diagnostics.CapabilityStatusCounts.Unsupported,
 	)
 	if strings.TrimSpace(diagnostics.Message) != "" {
-		fmt.Fprintf(rt.Out, "message: %s\n", redactSensitiveText(diagnostics.Message))
+		out.Printf("message: %s\n", redactSensitiveText(diagnostics.Message))
 	}
 	if len(diagnostics.CapabilityGaps) > 0 {
-		fmt.Fprintln(rt.Out, "gaps:")
+		out.Println("gaps:")
 		for _, gap := range diagnostics.CapabilityGaps {
-			fmt.Fprintf(rt.Out, "gap\t%s\tmissing=%s\tpartial=%s\tunsupported=%s\n",
+			out.Printf("gap\t%s\tmissing=%s\tpartial=%s\tunsupported=%s\n",
 				gap.Key,
 				strings.Join(gap.MissingClusterIDs, ","),
 				strings.Join(gap.PartialClusterIDs, ","),
@@ -105,13 +105,13 @@ func writeCloudFleetDiagnosticsSummary(rt Runtime, profileName string, diagnosti
 		}
 	}
 	if len(diagnostics.Clusters) > 0 {
-		fmt.Fprintln(rt.Out, "clusterDiagnostics:")
+		out.Println("clusterDiagnostics:")
 		for _, cluster := range diagnostics.Clusters {
 			degradedKeys := make([]string, 0, len(cluster.DegradedCapabilities))
 			for _, capability := range cluster.DegradedCapabilities {
 				degradedKeys = append(degradedKeys, capability.Key+":"+capability.Status)
 			}
-			fmt.Fprintf(rt.Out, "cluster\t%s\t%s\tavailable=%d\tpartial=%d\tunsupported=%d\tmissing=%s\tdegraded=%s\n",
+			out.Printf("cluster\t%s\t%s\tavailable=%d\tpartial=%d\tunsupported=%d\tmissing=%s\tdegraded=%s\n",
 				cluster.ClusterID,
 				cluster.Status,
 				cluster.Counts.Available,
@@ -122,4 +122,5 @@ func writeCloudFleetDiagnosticsSummary(rt Runtime, profileName string, diagnosti
 			)
 		}
 	}
+	return out.Err()
 }

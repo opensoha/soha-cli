@@ -47,8 +47,7 @@ func runPluginSearchWithOutput(ctx context.Context, args []string, rt Runtime) e
 	if formatValue != "table" {
 		return writeStructuredOutput(rt.Out, formatValue, sanitizeCLIValue(items))
 	}
-	printMarketplacePluginSearchTable(rt.Out, items)
-	return nil
+	return printMarketplacePluginSearchTable(rt.Out, items)
 }
 
 func runPluginShowWithOutput(ctx context.Context, args []string, rt Runtime) error {
@@ -91,8 +90,7 @@ func runPluginShowWithOutput(ctx context.Context, args []string, rt Runtime) err
 		if formatValue != "table" {
 			return writeStructuredOutput(rt.Out, formatValue, sanitizeCLIValue(item))
 		}
-		printPluginManifestTable(rt.Out, item)
-		return nil
+		return printPluginManifestTable(rt.Out, item)
 	}
 	if *installed {
 		item, err := client.GetInstalledPlugin(ctx, pluginID, headers)
@@ -102,8 +100,7 @@ func runPluginShowWithOutput(ctx context.Context, args []string, rt Runtime) err
 		if formatValue != "table" {
 			return writeStructuredOutput(rt.Out, formatValue, sanitizeCLIValue(item))
 		}
-		printInstalledPluginTable(rt.Out, item)
-		return nil
+		return printInstalledPluginTable(rt.Out, item)
 	}
 	query := url.Values{}
 	applyMarketplaceQuery(query, profile, *marketplace, *sourceID, *version)
@@ -114,8 +111,7 @@ func runPluginShowWithOutput(ctx context.Context, args []string, rt Runtime) err
 	if formatValue != "table" {
 		return writeStructuredOutput(rt.Out, formatValue, sanitizeCLIValue(item))
 	}
-	printMarketplacePluginTable(rt.Out, item)
-	return nil
+	return printMarketplacePluginTable(rt.Out, item)
 }
 
 func runPluginListWithOutput(ctx context.Context, args []string, rt Runtime) error {
@@ -144,8 +140,7 @@ func runPluginListWithOutput(ctx context.Context, args []string, rt Runtime) err
 	if formatValue != "table" {
 		return writeStructuredOutput(rt.Out, formatValue, sanitizeCLIValue(items))
 	}
-	printInstalledPluginListTable(rt.Out, items)
-	return nil
+	return printInstalledPluginListTable(rt.Out, items)
 }
 
 func pluginOutputFlagSet(fs *flag.FlagSet) bool {
@@ -164,9 +159,10 @@ func applyMarketplaceQuery(query url.Values, profile ProfileConfig, marketplaceU
 	setQuery(query, "version", version)
 }
 
-func printMarketplacePluginSearchTable(out io.Writer, items []MarketplacePlugin) {
+func printMarketplacePluginSearchTable(destination io.Writer, items []MarketplacePlugin) error {
+	out := newCheckedWriter(destination)
 	for _, item := range items {
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\tinstalled=%t\t%s\n",
+		out.Printf("%s\t%s\t%s\t%s\tinstalled=%t\t%s\n",
 			redactSensitiveText(item.ID),
 			redactSensitiveText(item.Type),
 			redactSensitiveText(item.Publisher),
@@ -175,10 +171,12 @@ func printMarketplacePluginSearchTable(out io.Writer, items []MarketplacePlugin)
 			redactSensitiveText(item.Name),
 		)
 	}
+	return out.Err()
 }
 
-func printMarketplacePluginTable(out io.Writer, item MarketplacePlugin) {
-	fmt.Fprintf(out, "id: %s\nname: %s\npublisher: %s\nversion: %s\ntype: %s\nsource: %s\ninstalled: %t\nsummary: %s\n",
+func printMarketplacePluginTable(destination io.Writer, item MarketplacePlugin) error {
+	out := newCheckedWriter(destination)
+	out.Printf("id: %s\nname: %s\npublisher: %s\nversion: %s\ntype: %s\nsource: %s\ninstalled: %t\nsummary: %s\n",
 		redactSensitiveText(item.ID),
 		redactSensitiveText(item.Name),
 		redactSensitiveText(item.Publisher),
@@ -188,10 +186,12 @@ func printMarketplacePluginTable(out io.Writer, item MarketplacePlugin) {
 		item.Installed,
 		redactSensitiveText(item.Summary),
 	)
+	return out.Err()
 }
 
-func printInstalledPluginTable(out io.Writer, item InstalledPlugin) {
-	fmt.Fprintf(out, "id: %s\nname: %s\npublisher: %s\nversion: %s\ntype: %s\nstatus: %s\nsource: %s\nchecksum: %s\nsignature: %s\n",
+func printInstalledPluginTable(destination io.Writer, item InstalledPlugin) error {
+	out := newCheckedWriter(destination)
+	out.Printf("id: %s\nname: %s\npublisher: %s\nversion: %s\ntype: %s\nstatus: %s\nsource: %s\nchecksum: %s\nsignature: %s\n",
 		redactSensitiveText(item.ID),
 		redactSensitiveText(item.Name),
 		redactSensitiveText(item.Publisher),
@@ -203,16 +203,18 @@ func printInstalledPluginTable(out io.Writer, item InstalledPlugin) {
 		redactSensitiveText(item.SignatureStatus),
 	)
 	if item.RequestedPermissions != nil {
-		fmt.Fprintf(out, "requestedPermissions: required=%s domain=%s\n",
+		out.Printf("requestedPermissions: required=%s domain=%s\n",
 			strings.Join(redactSensitiveStrings(item.RequestedPermissions.Required), ","),
 			strings.Join(redactSensitiveStrings(item.RequestedPermissions.Domain), ","),
 		)
 	}
+	return out.Err()
 }
 
-func printInstalledPluginListTable(out io.Writer, items []InstalledPlugin) {
+func printInstalledPluginListTable(destination io.Writer, items []InstalledPlugin) error {
+	out := newCheckedWriter(destination)
 	for _, item := range items {
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\n",
+		out.Printf("%s\t%s\t%s\t%s\t%s\n",
 			redactSensitiveText(item.ID),
 			redactSensitiveText(item.Status),
 			redactSensitiveText(item.Type),
@@ -220,10 +222,12 @@ func printInstalledPluginListTable(out io.Writer, items []InstalledPlugin) {
 			redactSensitiveText(item.Name),
 		)
 	}
+	return out.Err()
 }
 
-func printPluginManifestTable(out io.Writer, item PluginManifest) {
-	fmt.Fprintf(out, "id: %s\nname: %s\npublisher: %s\nversion: %s\ntype: %s\ndescription: %s\nhomepage: %s\n",
+func printPluginManifestTable(destination io.Writer, item PluginManifest) error {
+	out := newCheckedWriter(destination)
+	out.Printf("id: %s\nname: %s\npublisher: %s\nversion: %s\ntype: %s\ndescription: %s\nhomepage: %s\n",
 		redactSensitiveText(item.ID),
 		redactSensitiveText(item.Name),
 		redactSensitiveText(item.Publisher),
@@ -233,7 +237,7 @@ func printPluginManifestTable(out io.Writer, item PluginManifest) {
 		redactSensitiveText(item.Homepage),
 	)
 	if item.Permissions != nil {
-		fmt.Fprintf(out, "permissions: required=%s domain=%s\n",
+		out.Printf("permissions: required=%s domain=%s\n",
 			strings.Join(redactSensitiveStrings(item.Permissions.Required), ","),
 			strings.Join(redactSensitiveStrings(item.Permissions.Domain), ","),
 		)
@@ -244,8 +248,9 @@ func printPluginManifestTable(out io.Writer, item PluginManifest) {
 			names = append(names, redactSensitiveText(requirement.Name))
 		}
 		sort.Strings(names)
-		fmt.Fprintf(out, "secrets: required=%s\n", strings.Join(names, ","))
+		out.Printf("secrets: required=%s\n", strings.Join(names, ","))
 	}
+	return out.Err()
 }
 
 func redactSensitiveStrings(values []string) []string {

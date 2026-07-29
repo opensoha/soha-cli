@@ -318,8 +318,7 @@ func runKnowledgeSearch(ctx context.Context, args []string, rt Runtime) error {
 	case "json", "yaml":
 		return writeStructuredOutput(rt.Out, formatValue, sanitizeCLIValue(result))
 	case "summary":
-		writeKnowledgeSearchSummary(rt, profileName, result)
-		return nil
+		return writeKnowledgeSearchSummary(rt, profileName, result)
 	default:
 		return fmt.Errorf("unsupported output format %q", formatValue)
 	}
@@ -343,18 +342,20 @@ func splitCommaValues(value string) []string {
 	return result
 }
 
-func writeKnowledgeSearchSummary(rt Runtime, profileName string, result KnowledgeSearchResult) {
-	fmt.Fprintf(rt.Out, "profile: %s\nquery: %s\ntrace: %s\n", profileName, result.Query, result.TraceID)
-	fmt.Fprintf(rt.Out, "results: hits=%d candidates=%d timingMs=%d noAnswer=%t\n", len(result.Hits), result.CandidateCount, result.TimingMs, result.NoAnswer)
+func writeKnowledgeSearchSummary(rt Runtime, profileName string, result KnowledgeSearchResult) error {
+	out := newCheckedWriter(rt.Out)
+	out.Printf("profile: %s\nquery: %s\ntrace: %s\n", profileName, result.Query, result.TraceID)
+	out.Printf("results: hits=%d candidates=%d timingMs=%d noAnswer=%t\n", len(result.Hits), result.CandidateCount, result.TimingMs, result.NoAnswer)
 	for index, hit := range result.Hits {
 		uri := hit.Citation.URI
 		if uri == "" {
 			uri = hit.Citation.Location.URI
 		}
-		fmt.Fprintf(rt.Out, "%d. %s\tscore=%.4f\tdocument=%s\tchunk=%s\turi=%s\n", index+1, hit.Title, hit.Score, hit.DocumentID, hit.ChunkID, uri)
+		out.Printf("%d. %s\tscore=%.4f\tdocument=%s\tchunk=%s\turi=%s\n", index+1, hit.Title, hit.Score, hit.DocumentID, hit.ChunkID, uri)
 		content := strings.TrimSpace(redactSensitiveText(hit.Content))
 		if content != "" {
-			fmt.Fprintf(rt.Out, "   %s\n", content)
+			out.Printf("   %s\n", content)
 		}
 	}
+	return out.Err()
 }

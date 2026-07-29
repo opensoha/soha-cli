@@ -21,23 +21,22 @@ func runDocs(args []string, rt Runtime) error {
 	}
 	switch strings.ToLower(strings.TrimSpace(*format)) {
 	case "", "markdown":
-		writeCommandDocsMarkdown(rt.Out)
-		return nil
+		return writeCommandDocsMarkdown(rt.Out)
 	default:
 		return fmt.Errorf("unsupported docs format %q", *format)
 	}
 }
 
-func writeCommandDocsMarkdown(out io.Writer) {
-	fmt.Fprintln(out, "# Soha CLI Command Reference")
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Generated with `soha docs --format markdown`.")
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "| Command | Usage | Purpose | Examples |")
-	fmt.Fprintln(out, "| --- | --- | --- | --- |")
+func writeCommandDocsMarkdown(destination io.Writer) error {
+	out := newCheckedWriter(destination)
+	out.Println("# Soha CLI Command Reference")
+	out.Println()
+	out.Println("Generated with `soha docs --format markdown`.")
+	out.Println()
+	out.Println("| Command | Usage | Purpose | Examples |")
+	out.Println("| --- | --- | --- | --- |")
 	for _, doc := range commandDocsFromSpecs() {
-		fmt.Fprintf(
-			out,
+		out.Printf(
 			"| `%s` | `%s` | %s | %s |\n",
 			markdownCell(doc.Command),
 			markdownCell(doc.Usage),
@@ -45,6 +44,7 @@ func writeCommandDocsMarkdown(out io.Writer) {
 			markdownExamples(doc.Examples),
 		)
 	}
+	return out.Err()
 }
 
 func commandDocsFromSpecs() []commandDoc {

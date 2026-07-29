@@ -242,12 +242,13 @@ func runGovernanceStatus(ctx context.Context, args []string, rt Runtime) error {
 	case "yaml":
 		return writeYAML(rt.Out, sanitizeCLIValue(status))
 	}
-	fmt.Fprintf(rt.Out, "health: %s\t%s\n", status.Health.Status, redactSensitiveText(status.Health.Message))
+	out := newCheckedWriter(rt.Out)
+	out.Printf("health: %s\t%s\n", status.Health.Status, redactSensitiveText(status.Health.Message))
 	for _, check := range status.Health.Checks {
-		fmt.Fprintf(rt.Out, "healthCheck: %s\t%s\tcount=%d\t%s\n", redactSensitiveText(check.Status), redactSensitiveText(check.Name), check.Count, redactSensitiveText(check.Message))
+		out.Printf("healthCheck: %s\t%s\tcount=%d\t%s\n", redactSensitiveText(check.Status), redactSensitiveText(check.Name), check.Count, redactSensitiveText(check.Message))
 	}
-	fmt.Fprintf(rt.Out, "windowHours: %d\n", status.WindowHours)
-	fmt.Fprintf(rt.Out, "calls: total=%d success=%d deny=%d failure=%d pendingApproval=%d dryRun=%d\n",
+	out.Printf("windowHours: %d\n", status.WindowHours)
+	out.Printf("calls: total=%d success=%d deny=%d failure=%d pendingApproval=%d dryRun=%d\n",
 		status.Metrics.TotalCalls,
 		status.Metrics.SuccessCount,
 		status.Metrics.DenyCount,
@@ -255,7 +256,7 @@ func runGovernanceStatus(ctx context.Context, args []string, rt Runtime) error {
 		status.Metrics.PendingApprovalCount,
 		status.Metrics.DryRunCount,
 	)
-	fmt.Fprintf(rt.Out, "tokens: personalActive=%d serviceActive=%d expiringSoon=%d expiredActive=%d stale=%d neverUsed=%d lastUsed=%s\n",
+	out.Printf("tokens: personalActive=%d serviceActive=%d expiringSoon=%d expiredActive=%d stale=%d neverUsed=%d lastUsed=%s\n",
 		status.Tokens.PersonalAccessTokens.Active,
 		status.Tokens.ServiceAccountTokens.Active,
 		len(status.Tokens.ExpiringSoon),
@@ -264,7 +265,7 @@ func runGovernanceStatus(ctx context.Context, args []string, rt Runtime) error {
 		len(status.Tokens.NeverUsed),
 		status.Tokens.LastUsedTrackingState,
 	)
-	fmt.Fprintf(rt.Out, "clients: total=%d active=%d pendingApproval=%d registrationApproval=%s\n",
+	out.Printf("clients: total=%d active=%d pendingApproval=%d registrationApproval=%s\n",
 		status.Clients.Total,
 		status.Clients.Active,
 		status.Clients.PendingApproval,
@@ -274,7 +275,7 @@ func runGovernanceStatus(ctx context.Context, args []string, rt Runtime) error {
 	if status.Approvals.NextDueAt != nil {
 		nextDue = status.Approvals.NextDueAt.Format(time.RFC3339)
 	}
-	fmt.Fprintf(rt.Out, "approvals: pending=%d dueSoon=%d stale=%d overdue=%d oldestPendingHours=%d nextDue=%s\n",
+	out.Printf("approvals: pending=%d dueSoon=%d stale=%d overdue=%d oldestPendingHours=%d nextDue=%s\n",
 		status.Approvals.Pending,
 		status.Approvals.DueSoon,
 		status.Approvals.StalePending,
@@ -282,7 +283,7 @@ func runGovernanceStatus(ctx context.Context, args []string, rt Runtime) error {
 		status.Approvals.OldestPendingHours,
 		nextDue,
 	)
-	fmt.Fprintf(rt.Out, "policyCoverage: access=%d activeAccess=%d grants=%d activeGrants=%d skills=%d activeSkills=%d budget=%s rateLimit=%s redaction=%s resourceScopes=%s scopedAccess=%d scopedGrants=%d\n",
+	out.Printf("policyCoverage: access=%d activeAccess=%d grants=%d activeGrants=%d skills=%d activeSkills=%d budget=%s rateLimit=%s redaction=%s resourceScopes=%s scopedAccess=%d scopedGrants=%d\n",
 		status.PolicyCoverage.AccessPolicies,
 		status.PolicyCoverage.ActiveAccessPolicies,
 		status.PolicyCoverage.ToolGrants,
@@ -296,7 +297,7 @@ func runGovernanceStatus(ctx context.Context, args []string, rt Runtime) error {
 		status.PolicyCoverage.ResourceScopedAccessPolicies,
 		status.PolicyCoverage.ResourceScopedToolGrants,
 	)
-	fmt.Fprintf(rt.Out, "redaction: matches=%d audits=%d inputAudits=%d outputAudits=%d field=%d sensitiveKey=%d sensitiveText=%d valuePattern=%d classifier=%d structured=%d\n",
+	out.Printf("redaction: matches=%d audits=%d inputAudits=%d outputAudits=%d field=%d sensitiveKey=%d sensitiveText=%d valuePattern=%d classifier=%d structured=%d\n",
 		status.Redaction.TotalMatches,
 		status.Redaction.AuditsWithRedaction,
 		status.Redaction.InputAudits,
@@ -309,33 +310,33 @@ func runGovernanceStatus(ctx context.Context, args []string, rt Runtime) error {
 		status.Redaction.StructuredSecretMatches,
 	)
 	if summary := governanceMetricCountsSummary(status.Redaction.TopTargets); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionTargets: %s\n", summary)
+		out.Printf("redactionTargets: %s\n", summary)
 	}
 	if summary := governanceMetricCountsSummary(status.Redaction.TopMatchTypes); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionMatchTypes: %s\n", summary)
+		out.Printf("redactionMatchTypes: %s\n", summary)
 	}
 	if summary := governanceMetricCountsSummary(status.Redaction.TopClassifiers); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionClassifiers: %s\n", summary)
+		out.Printf("redactionClassifiers: %s\n", summary)
 	}
 	if summary := governanceMetricCountsSummary(status.Redaction.TopFieldPaths); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionFieldPaths: %s\n", summary)
+		out.Printf("redactionFieldPaths: %s\n", summary)
 	}
 	if summary := governanceMetricCountsSummary(status.Redaction.TopPolicies); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionPolicies: %s\n", summary)
+		out.Printf("redactionPolicies: %s\n", summary)
 	}
 	if summary := governanceMetricCountsSummary(status.Redaction.TopTools); summary != "" {
-		fmt.Fprintf(rt.Out, "redactionTools: %s\n", summary)
+		out.Printf("redactionTools: %s\n", summary)
 	}
 	for _, finding := range status.Anomalies {
-		fmt.Fprintf(rt.Out, "finding: %s\t%s\t%d%s\t%s\n", finding.Severity, finding.Type, finding.Count, governanceFindingDetailSuffix(finding), redactSensitiveText(finding.Summary))
+		out.Printf("finding: %s\t%s\t%d%s\t%s\n", finding.Severity, finding.Type, finding.Count, governanceFindingDetailSuffix(finding), redactSensitiveText(finding.Summary))
 	}
 	for _, recommendation := range status.Recommendations {
-		fmt.Fprintf(rt.Out, "recommendation: %s\n", redactSensitiveText(recommendation))
+		out.Printf("recommendation: %s\n", redactSensitiveText(recommendation))
 	}
 	for _, action := range status.RecommendationActions {
-		fmt.Fprintf(rt.Out, "recommendationAction: %s\t%s\taction=%s%s\t%s\n", action.Severity, action.Type, action.Action, governanceRecommendationActionSuffix(action), redactSensitiveText(action.Summary))
+		out.Printf("recommendationAction: %s\t%s\taction=%s%s\t%s\n", action.Severity, action.Type, action.Action, governanceRecommendationActionSuffix(action), redactSensitiveText(action.Summary))
 	}
-	return nil
+	return out.Err()
 }
 
 func governanceMetricCountsSummary(items []GovernanceMetricCount) string {

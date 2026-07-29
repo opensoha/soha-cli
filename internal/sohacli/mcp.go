@@ -298,10 +298,14 @@ func mcpSDKPromptArguments(schema map[string]any) []*mcpsdk.PromptArgument {
 	items := mcpPromptArguments(schema)
 	out := make([]*mcpsdk.PromptArgument, 0, len(items))
 	for _, item := range items {
+		name, ok := item["name"].(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			continue
+		}
 		description, _ := item["description"].(string)
 		required, _ := item["required"].(bool)
 		out = append(out, &mcpsdk.PromptArgument{
-			Name:        item["name"].(string),
+			Name:        name,
 			Description: description,
 			Required:    required,
 		})

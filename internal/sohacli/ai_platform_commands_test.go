@@ -177,7 +177,8 @@ func TestAIEvaluationLegacyFlagsMapToFinalWireFields(t *testing.T) {
 		}
 		switch calls {
 		case 1:
-			if r.URL.Path != "/api/v1/ai/evaluations/replays" || body["baselineRunId"] != "baseline-legacy" || body["candidateRunId"] != "candidate-legacy" || body["executorProfileId"] != "executor-1" || !strings.HasPrefix(body["id"].(string), "replay-") {
+			id, ok := body["id"].(string)
+			if r.URL.Path != "/api/v1/ai/evaluations/replays" || body["baselineRunId"] != "baseline-legacy" || body["candidateRunId"] != "candidate-legacy" || body["executorProfileId"] != "executor-1" || !ok || !strings.HasPrefix(id, "replay-") {
 				t.Fatalf("legacy replay request = %s %#v", r.URL.Path, body)
 			}
 		case 2:

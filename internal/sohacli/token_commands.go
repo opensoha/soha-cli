@@ -107,6 +107,6 @@ func runTokenRevoke(ctx context.Context, args []string, rt Runtime) error {
 	if err := gatewayClient(rt, profile).RevokePersonalAccessToken(ctx, id, gatewayHeaders(profile, "", "", "", "")); err != nil {
 		return err
 	}
-	fmt.Fprintf(rt.Out, "Revoked token %s\n", id)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Revoked token %s\n", id)
+	return err
 }

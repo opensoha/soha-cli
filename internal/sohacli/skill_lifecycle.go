@@ -99,24 +99,25 @@ func runSkillStatus(args []string, rt Runtime) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(rt.Out, string(raw))
-		return nil
+		_, err = fmt.Fprintln(rt.Out, string(raw))
+		return err
 	}
-	fmt.Fprintf(rt.Out, "Skills destination: %s\n", status.Destination)
+	out := newCheckedWriter(rt.Out)
+	out.Printf("Skills destination: %s\n", status.Destination)
 	if !status.Managed {
-		fmt.Fprintf(rt.Out, "State: unmanaged (%d installed skills)\n", len(status.InstalledSkills))
-		return nil
+		out.Printf("State: unmanaged (%d installed skills)\n", len(status.InstalledSkills))
+		return out.Err()
 	}
-	fmt.Fprintf(rt.Out, "Active: %s (%s)\n", status.Active.PackageVersion, strings.Join(status.Active.Skills, ", "))
+	out.Printf("Active: %s (%s)\n", status.Active.PackageVersion, strings.Join(status.Active.Skills, ", "))
 	if status.Previous != nil {
-		fmt.Fprintf(rt.Out, "Previous: %s\n", status.Previous.PackageVersion)
+		out.Printf("Previous: %s\n", status.Previous.PackageVersion)
 	}
 	if status.Drifted {
-		fmt.Fprintln(rt.Out, "Integrity: drifted")
+		out.Println("Integrity: drifted")
 	} else {
-		fmt.Fprintln(rt.Out, "Integrity: verified")
+		out.Println("Integrity: verified")
 	}
-	return nil
+	return out.Err()
 }
 
 func runSkillUpdate(ctx context.Context, args []string, rt Runtime) error {
@@ -158,11 +159,11 @@ func runSkillUpdate(ctx context.Context, args []string, rt Runtime) error {
 		return err
 	}
 	if !changed {
-		fmt.Fprintf(rt.Out, "Skills already up to date at %s\n", generation.PackageVersion)
-		return nil
+		_, err = fmt.Fprintf(rt.Out, "Skills already up to date at %s\n", generation.PackageVersion)
+		return err
 	}
-	fmt.Fprintf(rt.Out, "Updated skills to %s in %s\n", generation.PackageVersion, installDest)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Updated skills to %s in %s\n", generation.PackageVersion, installDest)
+	return err
 }
 
 func runSkillRemove(args []string, rt Runtime) error {
@@ -184,8 +185,8 @@ func runSkillRemove(args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(rt.Out, "Removed %s; %d managed skills remain in %s\n", strings.Join(names, ", "), len(generation.Skills), installDest)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Removed %s; %d managed skills remain in %s\n", strings.Join(names, ", "), len(generation.Skills), installDest)
+	return err
 }
 
 func runSkillRollback(args []string, rt Runtime) error {
@@ -206,8 +207,8 @@ func runSkillRollback(args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(rt.Out, "Rolled back skills to %s in %s\n", generation.PackageVersion, installDest)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Rolled back skills to %s in %s\n", generation.PackageVersion, installDest)
+	return err
 }
 
 func installSkillGeneration(source, sourceRef, dest string, names []string, overwrite bool, eventType string) (skillGeneration, bool, error) {
@@ -218,14 +219,14 @@ func installSkillGeneration(source, sourceRef, dest string, names []string, over
 	defer unlock()
 	names = sortedUniqueSkillNames(names)
 	stateRoot := skillStateRoot(dest)
-	if err := os.MkdirAll(stateRoot, 0o755); err != nil {
+	if err := os.MkdirAll(stateRoot, 0o700); err != nil {
 		return skillGeneration{}, false, err
 	}
 	stage, err := os.MkdirTemp(stateRoot, ".stage-")
 	if err != nil {
 		return skillGeneration{}, false, err
 	}
-	defer os.RemoveAll(stage)
+	defer func() { _ = os.RemoveAll(stage) }()
 	if err := copyDirectoryContents(dest, stage); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return skillGeneration{}, false, err
 	}
@@ -319,7 +320,7 @@ func removeSkillGeneration(dest string, names []string) (skillGeneration, error)
 	if err != nil {
 		return skillGeneration{}, err
 	}
-	defer os.RemoveAll(stage)
+	defer func() { _ = os.RemoveAll(stage) }()
 	if err := copyDirectoryContents(dest, stage); err != nil {
 		return skillGeneration{}, err
 	}
@@ -403,7 +404,7 @@ func rollbackSkillGeneration(dest string) (skillGeneration, error) {
 func activateSkillStage(dest, stage string, state *skillInstallState, generation skillGeneration, eventType, decision, reason string) error {
 	stateRoot := skillStateRoot(dest)
 	versionsDir := filepath.Join(stateRoot, "versions")
-	if err := os.MkdirAll(versionsDir, 0o755); err != nil {
+	if err := os.MkdirAll(versionsDir, 0o700); err != nil {
 		return err
 	}
 	var previous *skillGeneration
@@ -430,7 +431,7 @@ func activateSkillStage(dest, stage string, state *skillInstallState, generation
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 		if previousDir != "" {
 			_ = os.Rename(previousDir, dest)
 		}
@@ -498,6 +499,7 @@ func loadSkillStatus(scope, dest string) (skillStatus, error) {
 
 func readSkillInstallState(dest string) (skillInstallState, error) {
 	path := filepath.Join(skillStateRoot(dest), "state.json")
+	// #nosec G304 -- path is derived from the managed skill state root.
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return skillInstallState{SchemaVersion: skillInstallStateSchema}, nil
@@ -553,9 +555,10 @@ func appendSkillAudit(dest string, generation skillGeneration, eventType, decisi
 		return err
 	}
 	path := filepath.Join(skillStateRoot(dest), "audit.jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// #nosec G304 -- path is derived from the managed skill state root.
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -621,12 +624,13 @@ func skillStateRoot(dest string) string {
 
 func acquireSkillInstallLock(dest string) (func(), error) {
 	root := skillStateRoot(dest)
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(root, ".lock")
 	deadline := time.Now().Add(skillLockTimeout)
 	for {
+		// #nosec G304 -- path is the lock file under the managed skill state root.
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			_, writeErr := fmt.Fprintf(file, "%d\n", os.Getpid())
@@ -697,6 +701,7 @@ func hashDirectory(root string) (string, error) {
 		}
 		_, _ = io.WriteString(hash, filepath.ToSlash(relative))
 		_, _ = hash.Write([]byte{0})
+		// #nosec G304 -- path is supplied by WalkDir under root.
 		file, err := os.Open(path)
 		if err != nil {
 			return err
@@ -728,7 +733,7 @@ func copyDirectoryContents(source, dest string) error {
 }
 
 func copyDirectory(source, dest string) error {
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	if err := os.MkdirAll(dest, 0o700); err != nil {
 		return err
 	}
 	return copyDirectoryContents(source, dest)
@@ -745,15 +750,21 @@ func copyDirectoryEntry(source, dest string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("unsupported file in skills directory: %s", source)
 	}
+	// #nosec G304 -- source is derived from a validated directory entry in the skills tree.
 	input, err := os.Open(source)
 	if err != nil {
 		return err
 	}
-	defer input.Close()
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	defer func() { _ = input.Close() }()
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 		return err
 	}
-	output, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	mode := os.FileMode(0o600)
+	if info.Mode()&0o100 != 0 {
+		mode = 0o700
+	}
+	// #nosec G304 -- dest is derived from the validated destination root and source entry name.
+	output, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
@@ -765,7 +776,7 @@ func copyDirectoryEntry(source, dest string) error {
 }
 
 func writeAtomicFile(path string, raw []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	file, err := os.CreateTemp(filepath.Dir(path), ".tmp-")
@@ -773,7 +784,7 @@ func writeAtomicFile(path string, raw []byte, mode os.FileMode) error {
 		return err
 	}
 	tempPath := file.Name()
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 	if err := file.Chmod(mode); err != nil {
 		_ = file.Close()
 		return err

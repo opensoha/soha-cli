@@ -3,7 +3,6 @@ package sohacli
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -51,10 +50,11 @@ func runSkillList(ctx context.Context, args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
+	out := newCheckedWriter(rt.Out)
 	for _, item := range items {
-		fmt.Fprintln(rt.Out, item)
+		out.Println(item)
 	}
-	return nil
+	return out.Err()
 }
 
 func runSkillInstall(ctx context.Context, args []string, rt Runtime) error {
@@ -91,13 +91,14 @@ func runSkillInstall(ctx context.Context, args []string, rt Runtime) error {
 		return err
 	}
 	if !changed {
-		fmt.Fprintf(rt.Out, "Skills already up to date in %s\n", installDest)
-		return nil
+		_, err = fmt.Fprintf(rt.Out, "Skills already up to date in %s\n", installDest)
+		return err
 	}
+	out := newCheckedWriter(rt.Out)
 	for _, name := range generation.Skills {
-		fmt.Fprintf(rt.Out, "Installed skill %s to %s\n", name, filepath.Join(installDest, name, "SKILL.md"))
+		out.Printf("Installed skill %s to %s\n", name, filepath.Join(installDest, name, "SKILL.md"))
 	}
-	return nil
+	return out.Err()
 }
 
 func defaultSkillSourcePath() string {
@@ -161,49 +162,6 @@ func listLocalSkills(source string) ([]string, error) {
 	}
 	sort.Strings(items)
 	return items, nil
-}
-
-func installLocalSkill(source, dest, name string, overwrite bool) (string, error) {
-	source = strings.TrimSpace(source)
-	if source == "" {
-		return "", fmt.Errorf("skill source directory is required")
-	}
-	source = normalizeSkillSourcePath(source)
-	dest = strings.TrimSpace(dest)
-	if dest == "" {
-		return "", fmt.Errorf("skill destination directory is required")
-	}
-	name = strings.TrimSpace(name)
-	if !isSafeSkillName(name) {
-		return "", fmt.Errorf("invalid skill id %q", name)
-	}
-	raw, err := os.ReadFile(filepath.Join(source, name, "SKILL.md"))
-	if err != nil {
-		return "", err
-	}
-	targetDir := filepath.Join(dest, name)
-	targetFile := filepath.Join(targetDir, "SKILL.md")
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return "", err
-	}
-	flag := os.O_WRONLY | os.O_CREATE
-	if overwrite {
-		flag |= os.O_TRUNC
-	} else {
-		flag |= os.O_EXCL
-	}
-	file, err := os.OpenFile(targetFile, flag, fs.FileMode(0o644))
-	if err != nil {
-		if os.IsExist(err) {
-			return "", fmt.Errorf("skill %q already exists at %s; pass --overwrite to replace it", name, targetFile)
-		}
-		return "", err
-	}
-	defer file.Close()
-	if _, err := file.Write(raw); err != nil {
-		return "", err
-	}
-	return targetFile, nil
 }
 
 func normalizeSkillSourcePath(source string) string {

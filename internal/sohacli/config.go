@@ -51,6 +51,7 @@ func defaultConfigPath() string {
 
 func loadConfig(path string) (Config, error) {
 	cfg := Config{CurrentProfile: defaultProfile, Profiles: map[string]ProfileConfig{}}
+	// #nosec G304 -- path is the configured Soha profile file, including the documented SOHA_CONFIG override.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -48,11 +48,13 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 	var err error
 	args, rt.HTTPTimeout, err = resolveRuntimeTimeout(args, rt.HTTPTimeout)
 	if err != nil {
-		fmt.Fprintln(rt.Err, "error:", err)
+		_, _ = fmt.Fprintln(rt.Err, "error:", err)
 		return 1
 	}
 	if len(args) == 0 {
-		printUsage(rt.Err)
+		if err := printUsage(rt.Err); err != nil {
+			return 1
+		}
 		return 2
 	}
 	if len(args) > 1 && isHelpArg(args[1]) && printCommandHelp(args[0], rt.Out) {
@@ -61,7 +63,9 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 	cmd := args[0]
 	switch cmd {
 	case "help", "-h", "--help":
-		printUsage(rt.Out)
+		if err := printUsage(rt.Out); err != nil {
+			return 1
+		}
 		return 0
 	default:
 		err = dispatchTopLevelCommand(ctx, cmd, args[1:], rt)
@@ -70,22 +74,24 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
-		fmt.Fprintln(rt.Err, "error:", err)
+		_, _ = fmt.Fprintln(rt.Err, "error:", err)
 		return 1
 	}
 	return 0
 }
 
-func printUsage(out io.Writer) {
-	fmt.Fprintln(out, "Usage: soha <command> [options]")
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Global options:")
-	fmt.Fprintln(out, "  --timeout <duration>  HTTP request timeout, e.g. 10s or 1m (default 30s)")
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Commands:")
+func printUsage(destination io.Writer) error {
+	out := newCheckedWriter(destination)
+	out.Println("Usage: soha <command> [options]")
+	out.Println()
+	out.Println("Global options:")
+	out.Println("  --timeout <duration>  HTTP request timeout, e.g. 10s or 1m (default 30s)")
+	out.Println()
+	out.Println("Commands:")
 	for _, spec := range topLevelCommandSpecs {
-		_, _ = fmt.Fprintf(out, "  %-15s %s\n", spec.Name, spec.Summary)
+		out.Printf("  %-15s %s\n", spec.Name, spec.Summary)
 	}
+	return out.Err()
 }
 
 func printCommandHelp(command string, out io.Writer) bool {
@@ -151,7 +157,9 @@ func runLogin(ctx context.Context, args []string, rt Runtime) error {
 		return fmt.Errorf("--login is required")
 	}
 	if strings.TrimSpace(*password) == "" {
-		fmt.Fprint(rt.Err, "Password: ")
+		if _, err := fmt.Fprint(rt.Err, "Password: "); err != nil {
+			return err
+		}
 		value, err := readPassword(rt)
 		if err != nil {
 			return err
@@ -188,8 +196,8 @@ func runLogin(ctx context.Context, args []string, rt Runtime) error {
 	if err := saveConfig(rt.ConfigPath, cfg); err != nil {
 		return err
 	}
-	fmt.Fprintf(rt.Out, "Logged in to %s as %s (profile %s)\n", cfg.Profiles[name].ServerURL, result.Data.User.UserName, name)
-	return nil
+	_, err = fmt.Fprintf(rt.Out, "Logged in to %s as %s (profile %s)\n", cfg.Profiles[name].ServerURL, result.Data.User.UserName, name)
+	return err
 }
 
 func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
@@ -233,28 +241,30 @@ func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
 	case "yaml":
 		return writeYAML(rt.Out, manifest)
 	case "names":
-		fmt.Fprintf(rt.Out, "profile: %s\n", name)
+		out := newCheckedWriter(rt.Out)
+		out.Printf("profile: %s\n", name)
 		for _, tool := range manifest.Tools {
-			fmt.Fprintf(rt.Out, "tool\t%s\t%s\t%s\n", tool.Name, tool.RiskLevel, approvalText(tool.RequiresApproval))
+			out.Printf("tool\t%s\t%s\t%s\n", tool.Name, tool.RiskLevel, approvalText(tool.RequiresApproval))
 		}
 		for _, item := range manifest.Resources {
-			fmt.Fprintf(rt.Out, "resource\t%s\n", item.Name)
+			out.Printf("resource\t%s\n", item.Name)
 		}
 		for _, item := range manifest.Prompts {
-			fmt.Fprintf(rt.Out, "prompt\t%s\n", item.Name)
+			out.Printf("prompt\t%s\n", item.Name)
 		}
 		for _, item := range manifest.Skills {
-			fmt.Fprintf(rt.Out, "skill\t%s\t%s\n", item.ID, item.Name)
+			out.Printf("skill\t%s\t%s\n", item.ID, item.Name)
 		}
-		return nil
+		return out.Err()
 	case "inputs":
-		fmt.Fprintf(rt.Out, "profile: %s\n", name)
+		out := newCheckedWriter(rt.Out)
+		out.Printf("profile: %s\n", name)
 		for _, tool := range manifest.Tools {
 			required, fields := toolSchemaSummary(tool.InputSchema)
 			outputRequired, outputFields := toolSchemaSummary(tool.OutputSchema)
-			fmt.Fprintf(rt.Out, "tool\t%s\trequired=%s\tfields=%s\toutputRequired=%s\toutputFields=%s\n", tool.Name, strings.Join(required, ","), strings.Join(fields, ","), strings.Join(outputRequired, ","), strings.Join(outputFields, ","))
+			out.Printf("tool\t%s\trequired=%s\tfields=%s\toutputRequired=%s\toutputFields=%s\n", tool.Name, strings.Join(required, ","), strings.Join(fields, ","), strings.Join(outputRequired, ","), strings.Join(outputFields, ","))
 		}
-		return nil
+		return out.Err()
 	default:
 		return fmt.Errorf("unsupported output format %q", *format)
 	}
@@ -272,9 +282,10 @@ func runPlatformCapabilities(ctx context.Context, rt Runtime, profileName string
 	case "yaml":
 		return writeYAML(rt.Out, items)
 	case "names":
-		fmt.Fprintf(rt.Out, "profile: %s\n", profileName)
+		out := newCheckedWriter(rt.Out)
+		out.Printf("profile: %s\n", profileName)
 		for _, item := range items {
-			fmt.Fprintf(rt.Out, "capability\t%s\t%s\t%s\tscopes=%s\tdirect=%s\tagent=%s",
+			out.Printf("capability\t%s\t%s\t%s\tscopes=%s\tdirect=%s\tagent=%s",
 				item.Key,
 				item.RiskLevel,
 				approvalText(item.RequiresApproval),
@@ -283,11 +294,11 @@ func runPlatformCapabilities(ctx context.Context, rt Runtime, profileName string
 				clusterCapabilitySupportText(item.Agent),
 			)
 			if reason := strings.TrimSpace(item.Agent.Reason); reason != "" {
-				fmt.Fprintf(rt.Out, "\treason=%s", redactSensitiveText(reason))
+				out.Printf("\treason=%s", redactSensitiveText(reason))
 			}
-			fmt.Fprintln(rt.Out)
+			out.Println()
 		}
-		return nil
+		return out.Err()
 	case "inputs":
 		return fmt.Errorf("platform capabilities do not expose input schemas; use --output names, json, or yaml")
 	default:
@@ -852,6 +863,7 @@ func readJSONInput(rt Runtime, path, inline string) (map[string]any, error) {
 		}
 		return parseJSONObject(raw)
 	default:
+		// #nosec G304 -- path is explicitly supplied through the command input-file option.
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
@@ -947,7 +959,7 @@ func sanitizeCLIValue(value any) any {
 		typed.ToolInput = sanitizeCLIMap(typed.ToolInput)
 		typed.RelatedIDs = sanitizeCLIMap(typed.RelatedIDs)
 		if typed.ApprovalTrace != nil {
-			trace := sanitizeCLIValue(*typed.ApprovalTrace).(ApprovalTrace)
+			trace := sanitizeAs(*typed.ApprovalTrace)
 			typed.ApprovalTrace = &trace
 		}
 		typed.Output = sanitizeCLIValue(typed.Output)
@@ -955,9 +967,9 @@ func sanitizeCLIValue(value any) any {
 		typed.DecisionComment = redactSensitiveText(typed.DecisionComment)
 		return typed
 	case ApprovalDecisionResult:
-		typed.Request = sanitizeCLIValue(typed.Request).(ApprovalRequest)
+		typed.Request = sanitizeAs(typed.Request)
 		if typed.Invocation != nil {
-			invocation := sanitizeCLIValue(*typed.Invocation).(ToolInvocationResult)
+			invocation := sanitizeAs(*typed.Invocation)
 			typed.Invocation = &invocation
 		}
 		return typed
@@ -971,13 +983,13 @@ func sanitizeCLIValue(value any) any {
 		typed.Metadata = sanitizeCLIMap(typed.Metadata)
 		return typed
 	case ApprovalTimeline:
-		typed.Request = sanitizeCLIValue(typed.Request).(ApprovalRequest)
+		typed.Request = sanitizeAs(typed.Request)
 		if typed.Trace != nil {
-			trace := sanitizeCLIValue(*typed.Trace).(ApprovalTrace)
+			trace := sanitizeAs(*typed.Trace)
 			typed.Trace = &trace
 		}
 		for index := range typed.Events {
-			typed.Events[index] = sanitizeCLIValue(typed.Events[index]).(ApprovalTimelineEvent)
+			typed.Events[index] = sanitizeAs(typed.Events[index])
 		}
 		return typed
 	case GovernanceStatus:
@@ -1035,6 +1047,14 @@ func sanitizeCLIValue(value any) any {
 	default:
 		return typed
 	}
+}
+
+func sanitizeAs[T any](value T) T {
+	sanitized, ok := sanitizeCLIValue(value).(T)
+	if !ok {
+		return value
+	}
+	return sanitized
 }
 
 func sanitizeCLIJSONValue(value any) any {
