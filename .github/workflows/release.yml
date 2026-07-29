@@ -159,6 +159,13 @@ jobs:
           if ! timeout 30s gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             timeout 30s gh release create "${GITHUB_REF_NAME}" --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes
           fi
+          timeout 30s gh release edit "${GITHUB_REF_NAME}" --draft=false --prerelease=false --latest
+
+          release_state="$(timeout 30s gh release view "${GITHUB_REF_NAME}" --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease] | @tsv')"
+          if [[ "${release_state}" != $'false\tfalse' ]]; then
+            printf 'release must be published and non-prerelease, got: %s\n' "${release_state}" >&2
+            exit 1
+          fi
 
           for file in "${files[@]}"; do
             echo "Uploading $(basename "${file}")"
