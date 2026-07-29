@@ -130,9 +130,16 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/download-artifact@v7
+      - name: Download release archives
+        uses: actions/download-artifact@v7
         with:
+          pattern: release-*
           path: downloaded
+      - name: Download checksums
+        uses: actions/download-artifact@v7
+        with:
+          name: checksums
+          path: downloaded/checksums
       - name: Publish release assets
         run: |
           set -euo pipefail
