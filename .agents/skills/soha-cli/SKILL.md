@@ -9,7 +9,7 @@ description: >-
   support through the official MCP Go SDK, `soha setup`/`soha add` agent and
   IDE integration, the `@opensoha/cli` npm launcher, verified skill release installation,
   plugin marketplace commands, AI platform knowledge/evaluation/runtime
-  commands, cloud diagnostics, or CLI packaging. This skill
+  commands, cloud diagnostics, CI gates, release integrity, or CLI packaging. This skill
   enforces stdlib `flag` command patterns, `Runtime` I/O injection, safe local
   profile storage, redacted output, released `soha-contracts` compatibility,
   and no imports from the core `soha` repository internals.
@@ -25,15 +25,15 @@ types and local HTTP calls. It should remain testable without a real server.
 
 ## Workflow
 
-1. Read `internal/sohacli/command_metadata.go` before command changes. Command help, docs, completion hints, and dispatch all flow from this metadata.
-2. Add command behavior in the smallest existing owner: profiles/context, MCP, skills, plugins, governance, AI platform/knowledge/evaluation, cloud diagnostics, tokens, service accounts, or Gateway calls.
+1. Read repository `AGENTS.md`, `internal/sohacli/command_metadata.go`, and the relevant CI workflow before changing behavior. Command help, docs, completion hints, and dispatch flow from the metadata; CI and release behavior flow from the workflows.
+2. Inspect the working tree and preserve unrelated edits. Add behavior in the smallest existing owner: profiles/context, MCP, skills, plugins, governance, AI platform/knowledge/evaluation, cloud diagnostics, tokens, service accounts, or Gateway calls.
 3. Keep the `Run(ctx, args, Runtime)` boundary. Use `Runtime.In`, `Runtime.Out`, `Runtime.Err`, `Runtime.ConfigPath`, and injectable HTTP clients in tests; do not write directly to `os.Stdout` or `os.Stderr` outside `cmd/soha/main.go`.
 4. Use stdlib `flag` plus `newRuntimeFlagSet`. Return errors from handlers and let `Run` map them to exit codes.
-5. Use `APIClient`, the focused AI platform client, and contracts DTOs for HTTP work. Do not import `github.com/opensoha/soha/internal/**` or sibling checkout internals.
+5. Use `APIClient`, focused clients, and contracts DTOs for HTTP work. Do not import `github.com/opensoha/soha/internal/**` or sibling checkout internals.
 6. Keep the committed `go.mod` on a released `soha-contracts` tag. Use temporary local `go.work` only for unreleased multi-repo contract work.
-7. When command surface changes, update `topLevelCommandSpecs`, completion words where relevant, and regenerate `docs/commands.md` with `go run ./cmd/soha docs --format markdown > docs/commands.md`.
+7. For command-surface changes, update metadata, dispatch, completion words where relevant, tests, and regenerate `docs/commands.md` with `go run ./cmd/soha docs --format markdown > docs/commands.md`.
 8. Keep `soha mcp` as the canonical direct stdio entry. Official SaaS is the endpoint default; self-hosted client configurations must carry an explicit `--base-url`. Keep `soha mcp start` compatible.
-9. The agent-facing `$soha` skill is sourced from the verified `soha-skills/agent-skills/soha` release asset. Do not embed or generate a second copy in the CLI.
+9. Source the agent-facing `$soha` skill from the verified `soha-skills/agent-skills/soha` release asset. Do not embed or generate a second copy in the CLI. Resolve normal installs and updates to the latest stable release; reserve explicit source pins for rollback and reproducibility rather than adding a routine `--skills-version` flow.
 
 ## Security Rules
 
@@ -52,11 +52,23 @@ types and local HTTP calls. It should remain testable without a real server.
 
 - For command logic, write tests through `Run` with injected buffers, temp config paths, and `httptest.Server`.
 - For HTTP clients, cover request path, method, auth headers, refresh behavior, and redacted output.
+- For command-surface changes, assert metadata, dispatch, help, completion, and generated command docs stay aligned.
+- For login and profile changes, cover `0700`/`0600` permissions, atomic writes, non-interactive credentials, token rotation, and secret-free errors.
 - For skill releases, cover a real tar.gz fixture, latest GitHub Release resolution, explicit version pins, cache reuse and tampering, checksum mismatch, unsafe archive members, generation activation/rollback, scope precedence, audit output, and the packaged release smoke path.
 - Run `npm test` and `npm pack --dry-run` in `npm/cli` when launcher or release assets change.
 - Run `go test ./...` for normal changes.
 - Run `GOWORK=off go test ./...` before changes that touch contracts, module state, Dockerfile, or release behavior.
 - Run `go vet ./...` and `go test -race ./...` for concurrency, token refresh, MCP stdio, or release-sensitive work.
+
+## Release Integrity
+
+- Keep public tags immutable. Build Linux, macOS, and Windows for `amd64` and `arm64` and inject version, commit, and UTC build date.
+- Tag only a `main` commit whose matching `cli-ci` run passed. The Release workflow packages and publishes artifacts but does not replace the complete race, vet, vulnerability, lint, npm, and Docker gate.
+- Publish the current 13-asset contract: `checksums.txt`, six bare binaries used by the npm launcher, and six platform archives. Verify the exact remote asset name set after upload.
+- Force release recovery paths to end with a published, non-prerelease Release. Do not treat an authenticated `gh release view` or a green upload process as proof that anonymous downloads work.
+- Keep the npm version equal to the tag without `v`. Publish `@opensoha/cli` after GitHub assets with provenance; make retries idempotent only when the exact version already exists.
+- Before release completion, verify anonymous binary and checksum downloads, registry metadata, and a clean-cache `npx -y @opensoha/cli@<version> version --json` invocation.
+- For auth, MCP, setup, or delivery-tool releases, also log in against a local Soha instance, inspect redacted profile state and permissions, and make an authenticated `capabilities` call.
 
 ## CI Gate
 
@@ -70,10 +82,11 @@ GOWORK=off go test ./...
 GOWORK=off go test -race ./...
 GOWORK=off go vet ./...
 GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
+golangci-lint run --timeout=5m
 GOWORK=off CGO_ENABLED=0 go build -o /tmp/soha-cli ./cmd/soha
 (cd npm/cli && npm test && npm pack --dry-run)
 docker build -f Dockerfile -t ghcr.io/opensoha/soha-cli:test .
 git diff --check
 ```
 
-CI also runs a full `golangci-lint v2.9.0` scan. Dockerfile, npm launcher, workflow, or release changes require their corresponding checks; a missing local Docker daemon must be covered by a successful GitHub Actions Docker job.
+Use `golangci-lint v2.9.0`; the workflow action is the executable source of truth for that version. `git diff --check` is an additional mandatory local pre-submit check rather than a current `ci.yml` step. Dockerfile, npm launcher, workflow, or release changes require their corresponding checks. A missing local Docker daemon is not a pass and must be covered by a successful GitHub Actions Docker job.
