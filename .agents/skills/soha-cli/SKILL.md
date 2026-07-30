@@ -57,3 +57,23 @@ types and local HTTP calls. It should remain testable without a real server.
 - Run `go test ./...` for normal changes.
 - Run `GOWORK=off go test ./...` before changes that touch contracts, module state, Dockerfile, or release behavior.
 - Run `go vet ./...` and `go test -race ./...` for concurrency, token refresh, MCP stdio, or release-sensitive work.
+
+## CI Gate
+
+Use Go `1.26.5` and run the release-sensitive gate with the root workspace disabled:
+
+```bash
+GOWORK=off go mod tidy
+git diff --exit-code -- go.mod go.sum
+GOWORK=off go mod verify
+GOWORK=off go test ./...
+GOWORK=off go test -race ./...
+GOWORK=off go vet ./...
+GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
+GOWORK=off CGO_ENABLED=0 go build -o /tmp/soha-cli ./cmd/soha
+(cd npm/cli && npm test && npm pack --dry-run)
+docker build -f Dockerfile -t ghcr.io/opensoha/soha-cli:test .
+git diff --check
+```
+
+CI also runs a full `golangci-lint v2.9.0` scan. Dockerfile, npm launcher, workflow, or release changes require their corresponding checks; a missing local Docker daemon must be covered by a successful GitHub Actions Docker job.
