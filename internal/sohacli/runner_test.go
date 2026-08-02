@@ -1104,7 +1104,12 @@ func TestRunToolCallReadsInputFileAndRedactsOutput(t *testing.T) {
 	}
 	var invoked bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/ai-gateway/tools/k8s.pods.list/invoke" {
+		switch r.URL.Path {
+		case "/api/v1/ai-gateway/capabilities":
+			writeJSON(t, w, map[string]any{"data": map[string]any{"tools": []map[string]any{{"name": "k8s.pods.list", "riskLevel": "read"}}}})
+			return
+		case "/api/v1/ai-gateway/tools/k8s.pods.list/invoke":
+		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		invoked = true
@@ -2412,7 +2417,7 @@ func TestRunDocsGeneratesMarkdown(t *testing.T) {
 	for _, want := range []string{
 		"# Soha CLI Command Reference",
 		"Generated with `soha docs --format markdown`.",
-		"| `tool call` | `soha tool call <name> [options]` |",
+		"| `tool call` | `soha tool call <name> [--preview] [--yes] [options]` |",
 		"| `docs` | `soha docs [--format markdown]` |",
 	} {
 		if !strings.Contains(out.String(), want) {

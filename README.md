@@ -232,7 +232,9 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `version` | Print build version information. | `soha version`, `soha version --json` |
 | `login` | Authenticate and store a local profile. | `soha login --server http://localhost:8080 --login ada` |
 | `capabilities` | Print the AI Gateway manifest. | `soha capabilities --output names`, `soha capabilities --output inputs` |
-| `tool call` | Invoke an AI Gateway tool with JSON input. | `soha tool call k8s.pods.list --input-json '{"clusterId":"local"}'` |
+| `logs query`, `logs tail` | Query or follow cluster, Docker project, and delivery environment logs. | `soha logs query --source cluster --cluster-id local --namespace default`, `soha logs tail --source docker --project-id project-1` |
+| `operation get`, `operation wait`, `operation cancel` | Inspect and control asynchronous compute operations. | `soha operation wait virtualization task-1`, `soha operation cancel container_runtime task-2 --yes` |
+| `tool call` | Invoke an AI Gateway tool with protected-call confirmation and redacted preview. | `soha tool call k8s.pods.list --input-json '{"clusterId":"local"}'`, `soha tool call delivery.actions.trigger --preview` |
 | `resource read` | Read an AI Gateway MCP resource. | `soha resource read soha://k8s/runtime --context-json '{"clusterId":"local"}'` |
 | `prompt get` | Get an AI Gateway MCP prompt. | `soha prompt get soha.k8s.diagnose_workload --arguments-json '{}'` |
 | `token list` | List personal access tokens. | `soha token list` |
@@ -276,9 +278,14 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `plugin upgrade` | Upgrade an installed plugin. | `soha plugin upgrade opensoha.k8s-sre-pack` |
 | `plugin config` | Configure metadata and secret refs. | `soha plugin config opensoha.k8s-sre-pack --secret-ref token=secret://k8s/token` |
 | `plugin remove` | Remove an installed plugin. | `soha plugin remove opensoha.k8s-sre-pack` |
-| `diagnose` | Check profile and Gateway visibility. | `soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime` |
-| `completion` | Print shell completion script. | `soha completion bash`, `soha completion zsh` |
+| `diagnose` | Check profile, AI client setup, and Gateway visibility. | `soha diagnose --client codex --output json` |
+| `completion` | Print shell completion script. | `soha completion bash`, `soha completion zsh`, `soha completion fish`, `soha completion powershell` |
 | `docs` | Generate CLI command reference documentation. | `soha docs --format markdown` |
+
+Structured command results use stdout; diagnostics and prompts use stderr. Exit
+codes are `0` for success/help, `1` for validation, execution, API, or terminal
+operation failures, `2` for a missing/unknown top-level command or malformed
+flag, and `130` for interrupted execution.
 
 ## License
 

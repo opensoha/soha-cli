@@ -2,12 +2,21 @@
 
 Generated with `soha docs --format markdown`.
 
+## Automation contract
+
+Structured results are written to stdout. Diagnostics and prompts are written to stderr. Exit codes are stable: `0` success/help, `1` validation, execution, API, or terminal operation failure, `2` missing/unknown top-level command or malformed flag, and `130` interrupted execution.
+
 | Command | Usage | Purpose | Examples |
 | --- | --- | --- | --- |
 | `version` | `soha version [--json]` | Print build version information. | `soha version`<br>`soha version --json` |
 | `login` | `soha login [options]` | Authenticate and store a local profile. | `soha login --server http://localhost:8080 --login ada` |
 | `capabilities` | `soha capabilities [--domain gateway\|platform] [--output json\|yaml\|names\|inputs]` | Print AI Gateway or platform capability metadata. | `soha capabilities --output names`<br>`soha capabilities --output inputs` |
-| `tool call` | `soha tool call <name> [options]` | Invoke an AI Gateway tool with JSON input. | `soha tool call k8s.pods.list --input-json '{"clusterId":"local"}'` |
+| `logs query` | `soha logs query --source <cluster\|docker\|delivery> [options]` | Query a bounded page of logs. | `soha logs query --source cluster --cluster-id local --namespace default --output json`<br>`soha logs query --source docker --project-id project-1 --service api --output ndjson` |
+| `logs tail` | `soha logs tail --source <cluster\|docker\|delivery> [options]` | Follow logs as NDJSON. | `soha logs tail --source cluster --cluster-id local --namespace default`<br>`soha logs tail --source delivery --application-id app-1 --environment-id env-1` |
+| `operation get` | `soha operation get <virtualization\|container_runtime> <id> [options]` | Get an operation. | `soha operation get virtualization task-1 --output json` |
+| `operation wait` | `soha operation wait <virtualization\|container_runtime> <id> [options]` | Wait for an operation to finish. | `soha operation wait container_runtime task-1 --wait-timeout 10m --output json` |
+| `operation cancel` | `soha operation cancel <virtualization\|container_runtime> <id> [options]` | Cancel an operation. | `soha operation cancel virtualization task-1 --yes` |
+| `tool call` | `soha tool call <name> [--preview] [--yes] [options]` | Invoke an AI Gateway tool with JSON input. | `soha tool call k8s.pods.list --input-json '{"clusterId":"local"}'`<br>`soha tool call k8s.deployments.restart --preview --input-json '{"clusterId":"local"}'`<br>`soha tool call k8s.deployments.restart --yes --input-json '{"clusterId":"local"}'` |
 | `resource read` | `soha resource read <uri> [options]` | Read an AI Gateway MCP resource. | `soha resource read soha://k8s/runtime --context-json '{"clusterId":"local"}'` |
 | `knowledge search` | `soha knowledge search --base-ids <id[,id...]> --query <text> [options]` | Search authorized knowledge bases and return grounded evidence. | `soha knowledge search --base-ids runbooks --query "deployment rollback"`<br>`soha knowledge search --base-ids runbooks,handbook --query "incident owner" --output json` |
 | `knowledge connectors` | `soha knowledge connectors <list\|create\|validate> [options]` | List, create, or validate external knowledge connectors. | `soha knowledge connectors list`<br>`soha knowledge connectors create --base-id runbooks --name docs --kind http --config-ref secret:knowledge/docs --config-json '{"url":"https://docs.example.com/","allowedHosts":["docs.example.com"],"maxBytes":8388608}'`<br>`soha knowledge connectors validate connector-1` |
@@ -57,6 +66,6 @@ Generated with `soha docs --format markdown`.
 | `plugin upgrade` | `soha plugin upgrade [options] <plugin-id>` | Upgrade an installed plugin. | `soha plugin upgrade opensoha.k8s-sre-pack`<br>`soha plugin upgrade --marketplace https://marketplace.opensoha.com --version 0.2.0 opensoha.k8s-sre-pack` |
 | `plugin config` | `soha plugin config <plugin-id> [options]` | Configure metadata and secret refs. | `soha plugin config opensoha.k8s-sre-pack --secret-ref token=secret://k8s/token` |
 | `plugin remove` | `soha plugin remove <plugin-id> [options]` | Remove an installed plugin. | `soha plugin remove opensoha.k8s-sre-pack` |
-| `diagnose` | `soha diagnose [options]` | Check profile and Gateway connectivity. | `soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime` |
-| `completion` | `soha completion [bash\|zsh]` | Print shell completion script. | `soha completion bash`<br>`soha completion zsh` |
+| `diagnose` | `soha diagnose [--client <name>] [--output text\|json] [options]` | Check profile, client setup, and Gateway connectivity. | `soha diagnose --client codex --output json`<br>`soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime` |
+| `completion` | `soha completion [bash\|zsh\|fish\|powershell]` | Print shell completion script. | `soha completion bash`<br>`soha completion zsh`<br>`soha completion fish`<br>`soha completion powershell` |
 | `docs` | `soha docs [--format markdown]` | Generate CLI command reference documentation. | `soha docs --format markdown` |

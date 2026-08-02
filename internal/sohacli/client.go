@@ -223,6 +223,22 @@ type ClusterCapabilityMatrixEntry struct {
 	Agent            ClusterCapabilityModeSupport `json:"agent"`
 }
 
+type LogEntry = sohaapi.LogEntry
+
+type LogPage = sohaapi.LogPage
+
+type LogQuery = sohaapi.LogQuery
+
+type LogSourceSelector = sohaapi.LogSourceSelector
+
+type ComputeTaskDomain = sohaapi.ComputeTaskDomain
+
+type ComputeTaskMutationRequest = sohaapi.ComputeTaskMutationRequest
+
+type ComputeTaskStatus = sohaapi.ComputeTaskStatus
+
+type ComputeTaskView = sohaapi.ComputeTaskView
+
 type CloudFleetCapabilityDiagnosticsEnvelope struct {
 	Diagnostics CloudFleetCapabilityDiagnostics `json:"diagnostics"`
 }
@@ -321,6 +337,50 @@ func (c APIClient) ClusterCapabilities(ctx context.Context) ([]ClusterCapability
 		return nil, err
 	}
 	return out.Items, nil
+}
+
+func (c APIClient) QueryClusterLogs(ctx context.Context, clusterID string, query LogQuery) (LogPage, error) {
+	return c.queryLogs(ctx, "/api/v1/clusters/"+url.PathEscape(strings.TrimSpace(clusterID))+"/logs/query", query)
+}
+
+func (c APIClient) QueryDockerProjectLogs(ctx context.Context, projectID string, query LogQuery) (LogPage, error) {
+	return c.queryLogs(ctx, "/api/v1/docker/projects/"+url.PathEscape(strings.TrimSpace(projectID))+"/logs/query", query)
+}
+
+func (c APIClient) QueryDeliveryEnvironmentLogs(ctx context.Context, applicationID, environmentID string, query LogQuery) (LogPage, error) {
+	path := "/api/v1/delivery/applications/" + url.PathEscape(strings.TrimSpace(applicationID)) +
+		"/environments/" + url.PathEscape(strings.TrimSpace(environmentID)) + "/logs/query"
+	return c.queryLogs(ctx, path, query)
+}
+
+func (c APIClient) queryLogs(ctx context.Context, path string, query LogQuery) (LogPage, error) {
+	var out itemResponse[LogPage]
+	if err := c.doJSON(ctx, http.MethodPost, path, c.Token, nil, query, &out); err != nil {
+		return LogPage{}, err
+	}
+	return out.Data, nil
+}
+
+func (c APIClient) GetComputeTask(ctx context.Context, domain ComputeTaskDomain, taskID string) (ComputeTaskView, error) {
+	var out itemResponse[ComputeTaskView]
+	path := computeTaskPath(domain, taskID)
+	if err := c.doJSON(ctx, http.MethodGet, path, c.Token, nil, nil, &out); err != nil {
+		return ComputeTaskView{}, err
+	}
+	return out.Data, nil
+}
+
+func (c APIClient) CancelComputeTask(ctx context.Context, domain ComputeTaskDomain, taskID string, input ComputeTaskMutationRequest) (ComputeTaskView, error) {
+	var out itemResponse[ComputeTaskView]
+	path := computeTaskPath(domain, taskID) + "/cancel"
+	if err := c.doJSON(ctx, http.MethodPost, path, c.Token, nil, input, &out); err != nil {
+		return ComputeTaskView{}, err
+	}
+	return out.Data, nil
+}
+
+func computeTaskPath(domain ComputeTaskDomain, taskID string) string {
+	return "/api/v1/compute/tasks/" + url.PathEscape(string(domain)) + "/" + url.PathEscape(strings.TrimSpace(taskID))
 }
 
 func (c APIClient) CloudFleetDiagnostics(ctx context.Context, tenantID, fleetID string) (CloudFleetCapabilityDiagnostics, error) {

@@ -33,6 +33,10 @@ func writeCommandDocsMarkdown(destination io.Writer) error {
 	out.Println()
 	out.Println("Generated with `soha docs --format markdown`.")
 	out.Println()
+	out.Println("## Automation contract")
+	out.Println()
+	out.Println("Structured results are written to stdout. Diagnostics and prompts are written to stderr. Exit codes are stable: `0` success/help, `1` validation, execution, API, or terminal operation failure, `2` missing/unknown top-level command or malformed flag, and `130` interrupted execution.")
+	out.Println()
 	out.Println("| Command | Usage | Purpose | Examples |")
 	out.Println("| --- | --- | --- | --- |")
 	for _, doc := range commandDocsFromSpecs() {

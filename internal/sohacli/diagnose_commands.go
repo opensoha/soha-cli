@@ -1,6 +1,7 @@
 package sohacli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -18,22 +19,65 @@ func runDiagnose(ctx context.Context, args []string, rt Runtime) error {
 	aiClientName := fs.String("ai-client", "", "override AI client display name for this diagnostic request")
 	skillID := fs.String("skill-id", "", "override skill id for this diagnostic request")
 	source := fs.String("source", "", "override source label for this diagnostic request")
+	clientTarget := fs.String("client", "", "AI client setup to verify, for example codex")
+	output := fs.String("output", "text", "output format: text or json")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	format, err := normalizeOutputFormat(*output, "text", "json")
+	if err != nil {
 		return err
 	}
 	_, name, profile, err := loadRuntimeProfile(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
-	manifest, err := gatewayClient(rt, profile).Capabilities(ctx, gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source))
+	clientName := firstNonEmptyString(*aiClientName, *clientTarget)
+	manifest, err := gatewayClient(rt, profile).Capabilities(ctx, gatewayHeaders(profile, *aiClientID, clientName, *skillID, *source))
 	if err != nil {
 		return err
 	}
+	var clusterCapabilities []ClusterCapabilityMatrixEntry
+	if strings.TrimSpace(*clusterCapabilityKey) != "" {
+		clusterCapabilities, err = gatewayClient(rt, profile).ClusterCapabilities(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	clientCheck, clientCheckErr := diagnoseClientSetup(ctx, rt, name, strings.TrimSpace(*clientTarget))
+	if format == "json" {
+		report := map[string]any{
+			"profile": map[string]any{"name": name, "server": profile.ServerURL, "user": profile.UserName},
+			"context": map[string]any{
+				"aiClientId": firstNonEmptyString(*aiClientID, profile.AIClientID),
+				"aiClient":   firstNonEmptyString(clientName, profile.AIClientName),
+				"skillId":    firstNonEmptyString(*skillID, profile.SkillID),
+				"source":     firstNonEmptyString(*source, profile.Source, "soha"),
+			},
+			"manifest": sanitizeCLIValue(manifest),
+		}
+		if clientCheck != nil {
+			report["clientCheck"] = clientCheck
+		}
+		if len(clusterCapabilities) > 0 {
+			report["clusterCapabilities"] = clusterCapabilities
+		}
+		if err := writePrettyJSON(rt.Out, report); err != nil {
+			return err
+		}
+		return clientCheckErr
+	}
 	out := newCheckedWriter(rt.Out)
+	if clientCheck != nil {
+		out.Printf("clientCheck: %s\nclient: %s\n", clientCheck["status"], clientCheck["client"])
+		for _, detail := range clientCheck["details"].([]string) {
+			out.Printf("clientCheckDetail: %s\n", detail)
+		}
+	}
 	out.Printf("profile: %s\nserver: %s\nuser: %s\n", name, profile.ServerURL, profile.UserName)
 	out.Printf("tools: %d\nresources: %d\nprompts: %d\nskills: %d\n", len(manifest.Tools), len(manifest.Resources), len(manifest.Prompts), len(manifest.Skills))
 	out.Printf("permissionKeys: %d\n", len(manifest.PermissionKeys))
-	out.Printf("aiClientId: %s\naiClient: %s\nskillId: %s\nsource: %s\n", firstNonEmptyString(*aiClientID, profile.AIClientID), firstNonEmptyString(*aiClientName, profile.AIClientName), firstNonEmptyString(*skillID, profile.SkillID), firstNonEmptyString(*source, profile.Source, "soha"))
+	out.Printf("aiClientId: %s\naiClient: %s\nskillId: %s\nsource: %s\n", firstNonEmptyString(*aiClientID, profile.AIClientID), firstNonEmptyString(clientName, profile.AIClientName), firstNonEmptyString(*skillID, profile.SkillID), firstNonEmptyString(*source, profile.Source, "soha"))
 	if strings.TrimSpace(*toolName) != "" {
 		diagnoseTool(out, manifest, strings.TrimSpace(*toolName))
 	}
@@ -44,16 +88,44 @@ func runDiagnose(ctx context.Context, args []string, rt Runtime) error {
 		diagnosePrompt(out, manifest, strings.TrimSpace(*promptName))
 	}
 	if strings.TrimSpace(*clusterCapabilityKey) != "" {
-		items, err := gatewayClient(rt, profile).ClusterCapabilities(ctx)
-		if err != nil {
-			return err
-		}
-		diagnoseClusterCapability(out, items, strings.TrimSpace(*clusterCapabilityKey))
+		diagnoseClusterCapability(out, clusterCapabilities, strings.TrimSpace(*clusterCapabilityKey))
 	}
 	if len(manifest.Tools) == 0 {
 		out.Println("hint: no tools visible; check ai.gateway.invoke, MCP tool grants, access policies, and skill bindings.")
 	}
-	return out.Err()
+	if err := out.Err(); err != nil {
+		return err
+	}
+	return clientCheckErr
+}
+
+func diagnoseClientSetup(ctx context.Context, rt Runtime, profileName, client string) (map[string]any, error) {
+	if client == "" {
+		return nil, nil
+	}
+	var stdout, stderr bytes.Buffer
+	checkRuntime := rt
+	checkRuntime.Out = &stdout
+	checkRuntime.Err = &stderr
+	err := runSetup(ctx, []string{"--client", client, "--mode", "mcp", "--check", "--profile", profileName}, checkRuntime)
+	details := nonEmptyLines(stdout.String())
+	status := "ok"
+	if err != nil {
+		status = "error"
+		details = append(details, redactSensitiveText(err.Error()))
+	}
+	return map[string]any{"client": client, "status": status, "details": details}, err
+}
+
+func nonEmptyLines(value string) []string {
+	lines := strings.Split(value, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line = strings.TrimSpace(line); line != "" {
+			out = append(out, redactSensitiveText(line))
+		}
+	}
+	return out
 }
 
 func diagnoseTool(out *checkedWriter, manifest Manifest, toolName string) {

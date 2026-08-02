@@ -1,6 +1,7 @@
 package sohacli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -49,7 +50,7 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 	args, rt.HTTPTimeout, err = resolveRuntimeTimeout(args, rt.HTTPTimeout)
 	if err != nil {
 		_, _ = fmt.Fprintln(rt.Err, "error:", err)
-		return 1
+		return 2
 	}
 	if len(args) == 0 {
 		if err := printUsage(rt.Err); err != nil {
@@ -57,12 +58,25 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 		}
 		return 2
 	}
-	if len(args) > 1 && isHelpArg(args[1]) && printCommandHelp(args[0], rt.Out) {
+	cmd := args[0]
+	if cmd == "help" {
+		if len(args) == 1 {
+			if err := printUsage(rt.Out); err != nil {
+				return 1
+			}
+			return 0
+		}
+		if printCommandHelp(args[1:], rt.Out) {
+			return 0
+		}
+		_, _ = fmt.Fprintf(rt.Err, "error: unknown help topic %q\n", strings.Join(args[1:], " "))
+		return 2
+	}
+	if hasHelpArg(args) && printCommandHelp(args, rt.Out) {
 		return 0
 	}
-	cmd := args[0]
 	switch cmd {
-	case "help", "-h", "--help":
+	case "-h", "--help":
 		if err := printUsage(rt.Out); err != nil {
 			return 1
 		}
@@ -74,10 +88,32 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+		if errors.Is(err, context.Canceled) {
+			_, _ = fmt.Fprintln(rt.Err, "error: interrupted")
+			return 130
+		}
 		_, _ = fmt.Fprintln(rt.Err, "error:", err)
+		if isUsageError(err) {
+			return 2
+		}
 		return 1
 	}
 	return 0
+}
+
+type usageError struct{ message string }
+
+func (e usageError) Error() string { return e.message }
+
+func isUsageError(err error) bool {
+	var usage usageError
+	if errors.As(err, &usage) {
+		return true
+	}
+	message := err.Error()
+	return strings.HasPrefix(message, "flag provided but not defined:") ||
+		strings.HasPrefix(message, "invalid value ") ||
+		strings.HasPrefix(message, "bad flag syntax:")
 }
 
 func printUsage(destination io.Writer) error {
@@ -94,12 +130,29 @@ func printUsage(destination io.Writer) error {
 	return out.Err()
 }
 
-func printCommandHelp(command string, out io.Writer) bool {
-	spec, ok := findTopLevelCommandSpec(command)
+func printCommandHelp(path []string, out io.Writer) bool {
+	spec, ok := findCommandSpec(path)
 	if !ok {
 		return false
 	}
-	_, _ = fmt.Fprintln(out, "Usage:", spec.Usage)
+	writer := newCheckedWriter(out)
+	writer.Println("Usage:", spec.Usage)
+	writer.Println()
+	writer.Println(spec.Summary)
+	if len(spec.Subcommands) > 0 {
+		writer.Println()
+		writer.Println("Subcommands:")
+		for _, subcommand := range spec.Subcommands {
+			writer.Printf("  %-15s %s\n", subcommand.Name, subcommand.Summary)
+		}
+	}
+	if len(spec.Examples) > 0 {
+		writer.Println()
+		writer.Println("Examples:")
+		for _, example := range spec.Examples {
+			writer.Println(" ", example)
+		}
+	}
 	return true
 }
 
@@ -328,6 +381,8 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 	aiClientName := fs.String("ai-client", "", "override AI client display name")
 	skillID := fs.String("skill-id", "", "override skill id")
 	source := fs.String("source", "", "override source label")
+	yes := fs.Bool("yes", false, "skip confirmation for protected tools")
+	preview := fs.Bool("preview", false, "print a redacted request preview without invoking the tool")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -346,11 +401,74 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
-	result, err := gatewayClient(rt, profile).InvokeTool(ctx, toolName, input, gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source))
+	client := gatewayClient(rt, profile)
+	headers := gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source)
+	manifest, err := client.Capabilities(ctx, headers)
+	if err != nil {
+		return err
+	}
+	tool, ok := findToolCapability(manifest, toolName)
+	if !ok {
+		return fmt.Errorf("tool %q is not available in the Gateway manifest", toolName)
+	}
+	requestPreview := map[string]any{
+		"tool": toolName, "riskLevel": tool.RiskLevel,
+		"requiresApproval": tool.RequiresApproval, "input": sanitizeCLIValue(input),
+	}
+	if *preview {
+		return writePrettyJSON(rt.Out, requestPreview)
+	}
+	if protectedTool(tool) && !*yes {
+		confirmed, err := confirmAction(rt, fmt.Sprintf("Invoke protected tool %s (risk=%s)?", toolName, tool.RiskLevel))
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			return fmt.Errorf("tool invocation declined; pass --yes for non-interactive use")
+		}
+	}
+	result, err := client.InvokeTool(ctx, toolName, input, headers)
 	if err != nil {
 		return err
 	}
 	return writePrettyJSON(rt.Out, sanitizeCLIValue(result))
+}
+
+func findToolCapability(manifest Manifest, name string) (ToolCapability, bool) {
+	for _, tool := range manifest.Tools {
+		if tool.Name == name {
+			return tool, true
+		}
+	}
+	return ToolCapability{}, false
+}
+
+func protectedTool(tool ToolCapability) bool {
+	if tool.RequiresApproval {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(tool.RiskLevel)) {
+	case "read", "analyze":
+		return false
+	default:
+		return true
+	}
+}
+
+func confirmAction(rt Runtime, prompt string) (bool, error) {
+	if _, err := fmt.Fprint(rt.Err, strings.TrimSpace(prompt)+" [y/N]: "); err != nil {
+		return false, err
+	}
+	line, err := bufio.NewReader(rt.In).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func runResource(ctx context.Context, args []string, rt Runtime) error {

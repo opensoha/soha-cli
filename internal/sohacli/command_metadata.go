@@ -42,15 +42,36 @@ var topLevelCommandSpecs = []commandSpec{
 		Handler:  runCapabilities,
 	},
 	{
+		Name:    "logs",
+		Usage:   "soha logs <query|tail> [options]",
+		Summary: "Query or follow operational logs",
+		Subcommands: []commandSpec{
+			{Name: "query", Usage: "soha logs query --source <cluster|docker|delivery> [options]", Summary: "Query a bounded page of logs", Examples: []string{"soha logs query --source cluster --cluster-id local --namespace default --output json", "soha logs query --source docker --project-id project-1 --service api --output ndjson"}},
+			{Name: "tail", Usage: "soha logs tail --source <cluster|docker|delivery> [options]", Summary: "Follow logs as NDJSON", Examples: []string{"soha logs tail --source cluster --cluster-id local --namespace default", "soha logs tail --source delivery --application-id app-1 --environment-id env-1"}},
+		},
+		Handler: runLogs,
+	},
+	{
+		Name:    "operation",
+		Usage:   "soha operation <get|wait|cancel> <domain> <id> [options]",
+		Summary: "Inspect and control asynchronous operations",
+		Subcommands: []commandSpec{
+			{Name: "get", Usage: "soha operation get <virtualization|container_runtime> <id> [options]", Summary: "Get an operation", Examples: []string{"soha operation get virtualization task-1 --output json"}},
+			{Name: "wait", Usage: "soha operation wait <virtualization|container_runtime> <id> [options]", Summary: "Wait for an operation to finish", Examples: []string{"soha operation wait container_runtime task-1 --wait-timeout 10m --output json"}},
+			{Name: "cancel", Usage: "soha operation cancel <virtualization|container_runtime> <id> [options]", Summary: "Cancel an operation", Examples: []string{"soha operation cancel virtualization task-1 --yes"}},
+		},
+		Handler: runOperation,
+	},
+	{
 		Name:    "tool",
-		Usage:   "soha tool call <name> [options]",
+		Usage:   "soha tool call <name> [--preview] [--yes] [options]",
 		Summary: "Invoke an AI Gateway tool with JSON input",
 		Subcommands: []commandSpec{
 			{
 				Name:     "call",
-				Usage:    "soha tool call <name> [options]",
+				Usage:    "soha tool call <name> [--preview] [--yes] [options]",
 				Summary:  "Invoke an AI Gateway tool with JSON input",
-				Examples: []string{"soha tool call k8s.pods.list --input-json '{\"clusterId\":\"local\"}'"},
+				Examples: []string{"soha tool call k8s.pods.list --input-json '{\"clusterId\":\"local\"}'", "soha tool call k8s.deployments.restart --preview --input-json '{\"clusterId\":\"local\"}'", "soha tool call k8s.deployments.restart --yes --input-json '{\"clusterId\":\"local\"}'"},
 			},
 		},
 		Handler: runTool,
@@ -267,17 +288,17 @@ var topLevelCommandSpecs = []commandSpec{
 	},
 	{
 		Name:     "diagnose",
-		Usage:    "soha diagnose [options]",
-		Summary:  "Check profile and Gateway connectivity",
-		Examples: []string{"soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime"},
+		Usage:    "soha diagnose [--client <name>] [--output text|json] [options]",
+		Summary:  "Check profile, client setup, and Gateway connectivity",
+		Examples: []string{"soha diagnose --client codex --output json", "soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime"},
 		Handler:  runDiagnose,
 	},
 	{
 		Name:            "completion",
-		Usage:           "soha completion [bash|zsh]",
+		Usage:           "soha completion [bash|zsh|fish|powershell]",
 		Summary:         "Print shell completion script",
-		Examples:        []string{"soha completion bash", "soha completion zsh"},
-		CompletionWords: []string{"bash", "zsh"},
+		Examples:        []string{"soha completion bash", "soha completion zsh", "soha completion fish", "soha completion powershell"},
+		CompletionWords: []string{"bash", "zsh", "fish", "powershell"},
 	},
 	{
 		Name:     "docs",
@@ -296,10 +317,37 @@ func findTopLevelCommandSpec(name string) (*commandSpec, bool) {
 	return nil, false
 }
 
+func findCommandSpec(path []string) (*commandSpec, bool) {
+	if len(path) == 0 {
+		return nil, false
+	}
+	spec, ok := findTopLevelCommandSpec(path[0])
+	if !ok {
+		return nil, false
+	}
+	for _, name := range path[1:] {
+		if isHelpArg(name) || strings.HasPrefix(name, "-") {
+			break
+		}
+		var next *commandSpec
+		for i := range spec.Subcommands {
+			if spec.Subcommands[i].matches(name) {
+				next = &spec.Subcommands[i]
+				break
+			}
+		}
+		if next == nil {
+			return nil, false
+		}
+		spec = next
+	}
+	return spec, true
+}
+
 func dispatchTopLevelCommand(ctx context.Context, name string, args []string, rt Runtime) error {
 	spec, ok := findTopLevelCommandSpec(name)
 	if !ok {
-		return fmt.Errorf("unknown command %q", name)
+		return usageError{message: fmt.Sprintf("unknown command %q", name)}
 	}
 	if spec.Handler == nil {
 		switch spec.Name {
