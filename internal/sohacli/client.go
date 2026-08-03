@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +95,18 @@ type ServiceAccount = sohaapi.ServiceAccount
 type ServiceAccountToken = sohaapi.ServiceAccountToken
 
 type CreatedServiceAccountToken = sohaapi.CreatedServiceAccountToken
+
+type SecretBinding = sohaapi.SecretBinding
+
+type SecretCreateRequest = sohaapi.SecretCreateRequest
+
+type SecretMetadata = sohaapi.SecretMetadata
+
+type SecretRotateRequest = sohaapi.SecretRotateRequest
+
+type SecretUpdateRequest = sohaapi.SecretUpdateRequest
+
+type SecretVersionMetadata = sohaapi.SecretVersionMetadata
 
 type AuditLog = sohaapi.AuditLog
 
@@ -393,13 +406,103 @@ func (c APIClient) CloudFleetDiagnostics(ctx context.Context, tenantID, fleetID 
 }
 
 func (c APIClient) InvokeTool(ctx context.Context, toolName string, input map[string]any, headers map[string]string) (ToolInvocationResult, error) {
+	return c.InvokeToolWithRequest(ctx, toolName, input, "", nil, headers)
+}
+
+func (c APIClient) InvokeToolWithRequestID(ctx context.Context, toolName string, input map[string]any, requestID string, headers map[string]string) (ToolInvocationResult, error) {
+	return c.InvokeToolWithRequest(ctx, toolName, input, requestID, nil, headers)
+}
+
+func (c APIClient) InvokeToolWithRequest(ctx context.Context, toolName string, input map[string]any, requestID string, secretRefs map[string]string, headers map[string]string) (ToolInvocationResult, error) {
 	var out invokeResponse
 	path := "/api/v1/ai-gateway/tools/" + url.PathEscape(toolName) + "/invoke"
 	payload := map[string]any{"input": emptyInput(input)}
+	if requestID = strings.TrimSpace(requestID); requestID != "" {
+		payload["requestId"] = requestID
+	}
+	if len(secretRefs) > 0 {
+		payload["secretRefs"] = secretRefs
+	}
 	if err := c.doJSON(ctx, http.MethodPost, path, c.Token, headers, payload, &out); err != nil {
 		return ToolInvocationResult{}, err
 	}
 	return out.Data, nil
+}
+
+func (c APIClient) ListSecrets(ctx context.Context, scopeType, scopeID string) ([]SecretMetadata, error) {
+	query := url.Values{}
+	if scopeType = strings.TrimSpace(scopeType); scopeType != "" {
+		query.Set("scopeType", scopeType)
+	}
+	if scopeID = strings.TrimSpace(scopeID); scopeID != "" {
+		query.Set("scopeId", scopeID)
+	}
+	path := "/api/v1/secrets"
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	var out itemsResponse[SecretMetadata]
+	if err := c.doJSON(ctx, http.MethodGet, path, c.Token, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+func (c APIClient) GetSecret(ctx context.Context, secretID string) (SecretMetadata, error) {
+	var out itemResponse[SecretMetadata]
+	if err := c.doJSON(ctx, http.MethodGet, secretPath(secretID), c.Token, nil, nil, &out); err != nil {
+		return SecretMetadata{}, err
+	}
+	return out.Data, nil
+}
+
+func (c APIClient) CreateSecret(ctx context.Context, input SecretCreateRequest) (SecretMetadata, error) {
+	var out itemResponse[SecretMetadata]
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/secrets", c.Token, nil, input, &out); err != nil {
+		return SecretMetadata{}, err
+	}
+	return out.Data, nil
+}
+
+func (c APIClient) UpdateSecret(ctx context.Context, secretID string, input SecretUpdateRequest) (SecretMetadata, error) {
+	var out itemResponse[SecretMetadata]
+	if err := c.doJSON(ctx, http.MethodPatch, secretPath(secretID), c.Token, nil, input, &out); err != nil {
+		return SecretMetadata{}, err
+	}
+	return out.Data, nil
+}
+
+func (c APIClient) DisableSecret(ctx context.Context, secretID string) error {
+	return c.doJSON(ctx, http.MethodDelete, secretPath(secretID), c.Token, nil, nil, nil)
+}
+
+func (c APIClient) ListSecretVersions(ctx context.Context, secretID string) ([]SecretVersionMetadata, error) {
+	var out itemsResponse[SecretVersionMetadata]
+	if err := c.doJSON(ctx, http.MethodGet, secretPath(secretID)+"/versions", c.Token, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+func (c APIClient) RotateSecret(ctx context.Context, secretID string, input SecretRotateRequest) (SecretVersionMetadata, error) {
+	var out itemResponse[SecretVersionMetadata]
+	if err := c.doJSON(ctx, http.MethodPost, secretPath(secretID)+"/versions", c.Token, nil, input, &out); err != nil {
+		return SecretVersionMetadata{}, err
+	}
+	return out.Data, nil
+}
+
+func (c APIClient) RevokeSecretVersion(ctx context.Context, secretID string, version int) (SecretVersionMetadata, error) {
+	var out itemResponse[SecretVersionMetadata]
+	path := secretPath(secretID) + "/versions/" + strconv.Itoa(version) + "/revoke"
+	if err := c.doJSON(ctx, http.MethodPost, path, c.Token, nil, nil, &out); err != nil {
+		return SecretVersionMetadata{}, err
+	}
+	return out.Data, nil
+}
+
+func secretPath(secretID string) string {
+	return "/api/v1/secrets/" + url.PathEscape(strings.TrimSpace(secretID))
 }
 
 func (c APIClient) ReadResource(ctx context.Context, uri string, contextValues map[string]any, headers map[string]string) (ResourceReadResult, error) {

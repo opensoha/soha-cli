@@ -1145,6 +1145,61 @@ func TestRunToolCallReadsInputFileAndRedactsOutput(t *testing.T) {
 	}
 }
 
+func TestRunToolCallSupportsOperationalPlanAndTrigger(t *testing.T) {
+	var invoked int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/ai-gateway/capabilities":
+			writeJSON(t, w, map[string]any{"data": map[string]any{"tools": []map[string]any{
+				{"name": "virtualization.vms.create.plan", "riskLevel": "analyze"},
+				{"name": "docker.projects.deploy.trigger", "riskLevel": "execute", "requiresApproval": true},
+			}}})
+		case "/api/v1/ai-gateway/tools/docker.projects.deploy.trigger/invoke":
+			invoked++
+			var req map[string]map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if req["input"]["idempotencyKey"] != "demo-deploy-1" || req["input"]["projectId"] != "project-1" {
+				t.Fatalf("unexpected trigger input %#v", req)
+			}
+			writeJSON(t, w, map[string]any{"data": map[string]any{
+				"toolName": "docker.projects.deploy.trigger",
+				"result":   "pending_approval",
+				"output":   map[string]any{"operationId": "op-1"},
+			}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfig(t, server.URL)
+	var preview bytes.Buffer
+	code := Run(context.Background(), []string{
+		"tool", "call", "virtualization.vms.create.plan", "--profile", "dev", "--preview",
+		"--input-json", `{"connectionId":"conn-1","cloudInit":"password=supersecret"}`,
+	}, Runtime{Out: &preview, Err: &bytes.Buffer{}, ConfigPath: configPath})
+	if code != 0 {
+		t.Fatalf("operational plan preview returned %d", code)
+	}
+	if invoked != 0 || strings.Contains(preview.String(), "supersecret") || !strings.Contains(preview.String(), "[REDACTED]") {
+		t.Fatalf("preview invoked or leaked sensitive input: %s", preview.String())
+	}
+
+	var out bytes.Buffer
+	code = Run(context.Background(), []string{
+		"tool", "call", "docker.projects.deploy.trigger", "--profile", "dev", "--yes",
+		"--input-json", `{"projectId":"project-1","idempotencyKey":"demo-deploy-1"}`,
+	}, Runtime{Out: &out, Err: &bytes.Buffer{}, ConfigPath: configPath})
+	if code != 0 {
+		t.Fatalf("operational trigger returned %d", code)
+	}
+	if invoked != 1 || !strings.Contains(out.String(), "pending_approval") || !strings.Contains(out.String(), "op-1") {
+		t.Fatalf("unexpected operational trigger result: %s", out.String())
+	}
+}
+
 func TestRunResourceReadAndPromptGetProxyGatewayAPI(t *testing.T) {
 	var resourceCalled bool
 	var promptCalled bool
@@ -2555,11 +2610,13 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer profile-token" {
 				t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
 			}
-			var req map[string]map[string]any
+			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode invoke request: %v", err)
 			}
-			if req["input"]["search"] != "api" {
+			input, _ := req["input"].(map[string]any)
+			refs, _ := req["secretRefs"].(map[string]any)
+			if input["search"] != "api" || input["_sohaSecretRefs"] != nil || refs["APP_TOKEN"] != "soha://secrets/app-token" {
 				t.Fatalf("unexpected invoke payload %#v", req)
 			}
 			writeJSON(t, w, map[string]any{
@@ -2625,7 +2682,7 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 		`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"soha-cli-test","version":"1.0.0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delivery.applications.list","arguments":{"search":"api"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delivery.applications.list","arguments":{"search":"api","_sohaSecretRefs":{"APP_TOKEN":"soha://secrets/app-token"}}}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"resources/list"}`,
 		`{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"soha://delivery/applications"}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"prompts/list"}`,
@@ -2653,7 +2710,7 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 	if !strings.Contains(text, `"tools"`) || !strings.Contains(text, "delivery.applications.list") {
 		t.Fatalf("MCP tools/list response missing tool: %q", text)
 	}
-	if !strings.Contains(text, `"inputSchema":{"properties":{"applicationId":{"type":"string"}},"required":["applicationId"],"type":"object"}`) {
+	if !strings.Contains(text, `"applicationId":{"type":"string"}`) || !strings.Contains(text, `"_sohaSecretRefs"`) || !strings.Contains(text, `soha://secrets/`) {
 		t.Fatalf("MCP tools/list response missing structured input schema: %q", text)
 	}
 	if !strings.Contains(text, `"outputSchema"`) || !strings.Contains(text, `"items":{"type":"array"}`) {

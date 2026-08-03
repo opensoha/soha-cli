@@ -211,6 +211,7 @@ func (s mcpServer) addTool(server *mcpsdk.Server, item ToolCapability) error {
 	if schemaType, _ := inputSchema["type"].(string); schemaType != "object" {
 		return fmt.Errorf("MCP tool %q input schema must have type object", item.Name)
 	}
+	inputSchema = mcpToolSchemaWithSecretRefs(inputSchema)
 	tool := &mcpsdk.Tool{
 		Name:        item.Name,
 		Title:       strings.TrimSpace(item.Title),
@@ -229,7 +230,11 @@ func (s mcpServer) addTool(server *mcpsdk.Server, item ToolCapability) error {
 				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "invalid tool arguments"}
 			}
 		}
-		result, err := s.client.InvokeTool(ctx, item.Name, arguments, s.headers)
+		secretRefs, err := extractMCPSecretRefs(arguments)
+		if err != nil {
+			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
+		}
+		result, err := s.client.InvokeToolWithRequest(ctx, item.Name, arguments, "", secretRefs, s.headers)
 		if err != nil {
 			return mcpTextResult(redactSensitiveText(err.Error()), true), nil
 		}
@@ -240,6 +245,50 @@ func (s mcpServer) addTool(server *mcpsdk.Server, item ToolCapability) error {
 		return mcpTextResult(string(raw), false), nil
 	})
 	return nil
+}
+
+func mcpToolSchemaWithSecretRefs(input map[string]any) map[string]any {
+	schema := make(map[string]any, len(input))
+	for key, value := range input {
+		schema[key] = value
+	}
+	properties := map[string]any{}
+	if existing, ok := input["properties"].(map[string]any); ok {
+		for key, value := range existing {
+			properties[key] = value
+		}
+	}
+	properties["_sohaSecretRefs"] = map[string]any{
+		"type": "object", "maxProperties": 64,
+		"propertyNames":        map[string]any{"pattern": secretAliasPattern.String()},
+		"additionalProperties": map[string]any{"type": "string", "pattern": secretURIPattern.String()},
+	}
+	schema["properties"] = properties
+	return schema
+}
+
+func extractMCPSecretRefs(arguments map[string]any) (map[string]string, error) {
+	raw, exists := arguments["_sohaSecretRefs"]
+	if !exists {
+		return nil, nil
+	}
+	delete(arguments, "_sohaSecretRefs")
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("_sohaSecretRefs must be an object")
+	}
+	refs := make(map[string]string, len(values))
+	for alias, rawURI := range values {
+		uri, ok := rawURI.(string)
+		if !ok {
+			return nil, fmt.Errorf("_sohaSecretRefs values must be strings")
+		}
+		refs[alias] = uri
+	}
+	if err := validateSecretRefs(refs); err != nil {
+		return nil, err
+	}
+	return refs, nil
 }
 
 func (s mcpServer) addResource(server *mcpsdk.Server, item ResourceCapability) {

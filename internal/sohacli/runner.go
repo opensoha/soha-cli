@@ -383,6 +383,8 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 	source := fs.String("source", "", "override source label")
 	yes := fs.Bool("yes", false, "skip confirmation for protected tools")
 	preview := fs.Bool("preview", false, "print a redacted request preview without invoking the tool")
+	secretRefFlags := repeatableFlag{}
+	fs.Var(&secretRefFlags, "secret-ref", "secret reference as ALIAS=soha://secrets/ID[/versions/N], repeatable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -401,6 +403,10 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
+	secretRefs, err := parseSecretRefFlags(secretRefFlags)
+	if err != nil {
+		return err
+	}
 	client := gatewayClient(rt, profile)
 	headers := gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source)
 	manifest, err := client.Capabilities(ctx, headers)
@@ -415,6 +421,9 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 		"tool": toolName, "riskLevel": tool.RiskLevel,
 		"requiresApproval": tool.RequiresApproval, "input": sanitizeCLIValue(input),
 	}
+	if len(secretRefs) > 0 {
+		requestPreview["secretRefs"] = secretRefs
+	}
 	if *preview {
 		return writePrettyJSON(rt.Out, requestPreview)
 	}
@@ -427,7 +436,7 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 			return fmt.Errorf("tool invocation declined; pass --yes for non-interactive use")
 		}
 	}
-	result, err := client.InvokeTool(ctx, toolName, input, headers)
+	result, err := client.InvokeToolWithRequest(ctx, toolName, input, "", secretRefs, headers)
 	if err != nil {
 		return err
 	}

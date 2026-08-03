@@ -70,7 +70,8 @@ func runDiagnose(ctx context.Context, args []string, rt Runtime) error {
 	out := newCheckedWriter(rt.Out)
 	if clientCheck != nil {
 		out.Printf("clientCheck: %s\nclient: %s\n", clientCheck["status"], clientCheck["client"])
-		for _, detail := range clientCheck["details"].([]string) {
+		details, _ := clientCheck["details"].([]string)
+		for _, detail := range details {
 			out.Printf("clientCheckDetail: %s\n", detail)
 		}
 	}

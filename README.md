@@ -235,8 +235,10 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `logs query`, `logs tail` | Query or follow cluster, Docker project, and delivery environment logs. | `soha logs query --source cluster --cluster-id local --namespace default`, `soha logs tail --source docker --project-id project-1` |
 | `operation get`, `operation wait`, `operation cancel` | Inspect and control asynchronous compute operations. | `soha operation wait virtualization task-1`, `soha operation cancel container_runtime task-2 --yes` |
 | `tool call` | Invoke an AI Gateway tool with protected-call confirmation and redacted preview. | `soha tool call k8s.pods.list --input-json '{"clusterId":"local"}'`, `soha tool call delivery.actions.trigger --preview` |
+| `project plan`, `project apply` | Plan and apply dependency-ordered `.soha/project.yaml` environments through live Gateway capabilities. | `soha project plan`, `soha project apply --yes` |
 | `resource read` | Read an AI Gateway MCP resource. | `soha resource read soha://k8s/runtime --context-json '{"clusterId":"local"}'` |
 | `prompt get` | Get an AI Gateway MCP prompt. | `soha prompt get soha.k8s.diagnose_workload --arguments-json '{}'` |
+| `secret list`, `secret create`, `secret rotate` | Manage write-only Secret Store metadata and immutable versions. | `soha secret list --scope-type project --scope-id demo`, `soha secret rotate registry-token` |
 | `token list` | List personal access tokens. | `soha token list` |
 | `token create` | Create a personal access token. | `soha token create --name local --permission-keys ai.gateway.view` |
 | `token revoke` | Revoke a personal access token. | `soha token revoke pat_123` |

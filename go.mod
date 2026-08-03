@@ -4,14 +4,16 @@ go 1.26.5
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/opensoha/soha-contracts v0.1.1
+	github.com/opensoha/soha-contracts v0.1.4
 	golang.org/x/term v0.27.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/oapi-codegen/runtime v1.4.2 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
