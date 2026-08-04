@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/opensoha/soha-contracts v0.1.4
+	github.com/opensoha/soha-contracts v0.1.5
 	golang.org/x/term v0.27.0
 	gopkg.in/yaml.v3 v3.0.1
 )

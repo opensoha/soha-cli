@@ -101,6 +101,10 @@ func runSecretCreate(ctx context.Context, args []string, rt Runtime) error {
 	description := fs.String("description", "", "secret description")
 	scopeType := fs.String("scope-type", "workspace", "scope type: workspace, project, or environment")
 	scopeID := fs.String("scope-id", "default", "scope id")
+	vaultMount := fs.String("vault-mount", "", "Vault KV v2 mount")
+	vaultPath := fs.String("vault-path", "", "Vault KV v2 secret path")
+	vaultKey := fs.String("vault-key", "", "Vault KV v2 data key")
+	vaultVersion := fs.Int("vault-version", 0, "pinned Vault KV v2 version")
 	bindings := repeatableFlag{}
 	fs.Var(&bindings, "binding", "binding as capability|project|connection=target, repeatable")
 	if err := fs.Parse(args); err != nil {
@@ -119,7 +123,7 @@ func runSecretCreate(ctx context.Context, args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
-	value, err := readSecretValue(rt)
+	value, vaultKV2, err := readSecretInput(rt, *vaultMount, *vaultPath, *vaultKey, *vaultVersion)
 	if err != nil {
 		return err
 	}
@@ -128,7 +132,7 @@ func runSecretCreate(ctx context.Context, args []string, rt Runtime) error {
 		return err
 	}
 	item, err := client.CreateSecret(ctx, SecretCreateRequest{
-		Name: strings.TrimSpace(*name), Description: strings.TrimSpace(*description), Value: value,
+		Name: strings.TrimSpace(*name), Description: strings.TrimSpace(*description), Value: value, VaultKv2: vaultKV2,
 		ScopeType: sohaapi.SecretScopeType(strings.TrimSpace(*scopeType)), ScopeID: strings.TrimSpace(*scopeID), Bindings: parsedBindings,
 	})
 	if err != nil {
@@ -225,14 +229,34 @@ func runSecretVersions(ctx context.Context, args []string, rt Runtime) error {
 func runSecretRotate(ctx context.Context, args []string, rt Runtime) error {
 	fs := newRuntimeFlagSet("secret rotate", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
-	if err := fs.Parse(args); err != nil {
+	vaultMount := fs.String("vault-mount", "", "Vault KV v2 mount")
+	vaultPath := fs.String("vault-path", "", "Vault KV v2 secret path")
+	vaultKey := fs.String("vault-key", "", "Vault KV v2 data key")
+	vaultVersion := fs.Int("vault-version", 0, "pinned Vault KV v2 version")
+	id := ""
+	flagArgs := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+			if !strings.Contains(arg, "=") && !isHelpArg(arg) && index+1 < len(args) {
+				index++
+				flagArgs = append(flagArgs, args[index])
+			}
+			continue
+		}
+		if id != "" {
+			return fmt.Errorf("secret rotate requires exactly one secret id")
+		}
+		id = strings.TrimSpace(arg)
+	}
+	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
-	id := strings.TrimSpace(fs.Arg(0))
 	if id == "" {
 		return fmt.Errorf("secret rotate requires a secret id")
 	}
-	value, err := readSecretValue(rt)
+	value, vaultKV2, err := readSecretInput(rt, *vaultMount, *vaultPath, *vaultKey, *vaultVersion)
 	if err != nil {
 		return err
 	}
@@ -240,7 +264,7 @@ func runSecretRotate(ctx context.Context, args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
-	version, err := client.RotateSecret(ctx, id, SecretRotateRequest{Value: value})
+	version, err := client.RotateSecret(ctx, id, SecretRotateRequest{Value: value, VaultKv2: vaultKV2})
 	if err != nil {
 		return err
 	}
@@ -289,6 +313,17 @@ func readSecretValue(rt Runtime) (string, error) {
 		return "", fmt.Errorf("secret value must not be empty")
 	}
 	return value, nil
+}
+
+func readSecretInput(rt Runtime, mount, path, key string, version int) (string, *SecretVaultKV2Reference, error) {
+	if mount == "" && path == "" && key == "" && version == 0 {
+		value, err := readSecretValue(rt)
+		return value, nil, err
+	}
+	if mount == "" || path == "" || strings.TrimSpace(key) == "" || version < 1 {
+		return "", nil, fmt.Errorf("--vault-mount, --vault-path, --vault-key, and a positive --vault-version must be provided together")
+	}
+	return "", &SecretVaultKV2Reference{Mount: mount, Path: path, Key: key, Version: version}, nil
 }
 
 func parseSecretBindings(values []string) ([]SecretBinding, error) {

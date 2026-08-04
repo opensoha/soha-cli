@@ -104,6 +104,8 @@ type SecretMetadata = sohaapi.SecretMetadata
 
 type SecretRotateRequest = sohaapi.SecretRotateRequest
 
+type SecretVaultKV2Reference = sohaapi.SecretVaultKV2Reference
+
 type SecretUpdateRequest = sohaapi.SecretUpdateRequest
 
 type SecretVersionMetadata = sohaapi.SecretVersionMetadata

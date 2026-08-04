@@ -62,6 +62,67 @@ func TestSecretCreateAndRotateKeepValuesWriteOnly(t *testing.T) {
 	}
 }
 
+func TestSecretCreateAndRotateAcceptVaultKV2LocatorsWithoutReadingAValue(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests++
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/secrets":
+			var input SecretCreateRequest
+			if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.Value != "" || input.VaultKv2 == nil || *input.VaultKv2 != (SecretVaultKV2Reference{Mount: "secret", Path: "demo/app", Key: " token ", Version: 3}) {
+				t.Fatalf("create input = %#v", input)
+			}
+			writeJSON(t, w, map[string]any{"data": map[string]any{"id": "secret-1", "name": input.Name, "scopeType": input.ScopeType, "scopeId": input.ScopeID, "status": "active", "currentVersion": 1, "bindings": input.Bindings}})
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/secrets/secret-1/versions":
+			var input SecretRotateRequest
+			if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+				t.Fatal(err)
+			}
+			if input.Value != "" || input.VaultKv2 == nil || *input.VaultKv2 != (SecretVaultKV2Reference{Mount: "secret", Path: "demo/app", Key: " token ", Version: 4}) {
+				t.Fatalf("rotate input = %#v", input)
+			}
+			writeJSON(t, w, map[string]any{"data": map[string]any{"secretId": "secret-1", "version": 2, "status": "active"}})
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	configPath := writeTestConfig(t, server.URL)
+	for _, args := range [][]string{
+		{"secret", "create", "--profile", "dev", "--name", "registry-token", "--vault-mount", "secret", "--vault-path", "demo/app", "--vault-key", " token ", "--vault-version", "3"},
+		{"secret", "rotate", "--profile", "dev", "secret-1", "--vault-mount", "secret", "--vault-path", "demo/app", "--vault-key", " token ", "--vault-version", "4"},
+	} {
+		var out, errOut bytes.Buffer
+		code := Run(context.Background(), args, Runtime{In: strings.NewReader(""), Out: &out, Err: &errOut, ConfigPath: configPath})
+		if code != 0 {
+			t.Fatalf("%v returned %d: %s", args, code, errOut.String())
+		}
+		if strings.Contains(errOut.String(), "Secret value:") {
+			t.Fatalf("%v prompted for a local value", args)
+		}
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d", requests)
+	}
+}
+
+func TestSecretVaultKV2LocatorFlagsFailClosedWhenPartial(t *testing.T) {
+	var errOut bytes.Buffer
+	code := Run(context.Background(), []string{"secret", "create", "--name", "registry-token", "--vault-mount", "secret"}, Runtime{
+		In: strings.NewReader(""), Out: &bytes.Buffer{}, Err: &errOut,
+	})
+	if code != 1 || !strings.Contains(errOut.String(), "must be provided together") {
+		t.Fatalf("code = %d, stderr = %q", code, errOut.String())
+	}
+	if strings.Contains(errOut.String(), "Secret value:") {
+		t.Fatalf("partial locator prompted for a local value: %q", errOut.String())
+	}
+}
+
 func TestToolCallSendsSecretRefsOutsideInput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {

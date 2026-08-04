@@ -29,11 +29,11 @@ Structured results are written to stdout. Diagnostics and prompts are written to
 | `prompt get` | `soha prompt get <name> [options]` | Get an AI Gateway MCP prompt. | `soha prompt get soha.k8s.diagnose_workload --arguments-json '{}'` |
 | `secret list` | `soha secret list [--scope-type type --scope-id id] [options]` | List authorized secret metadata. | `soha secret list --scope-type project --scope-id demo` |
 | `secret get` | `soha secret get <secret-id> [options]` | Get secret metadata without revealing its value. | `soha secret get registry-token` |
-| `secret create` | `soha secret create --name <name> [--binding type=target] [options]` | Create a secret by reading its value without terminal echo. | `printf '%s\n' "$REGISTRY_TOKEN" \| soha secret create --name registry-token --scope-type project --scope-id demo --binding capability=docker.projects.deploy.trigger` |
+| `secret create` | `soha secret create --name <name> [--binding type=target] [options]` | Create a local or Vault KV v2 secret. | `printf '%s\n' "$REGISTRY_TOKEN" \| soha secret create --name registry-token --scope-type project --scope-id demo --binding capability=docker.projects.deploy.trigger`<br>`soha secret create --name registry-token --vault-mount secret --vault-path demo/app --vault-key token --vault-version 3` |
 | `secret update` | `soha secret update <secret-id> [options]` | Update secret metadata and bindings. | `soha secret update registry-token --binding capability=docker.projects.deploy.trigger` |
 | `secret disable` | `soha secret disable <secret-id> [options]` | Disable a secret. | `soha secret disable registry-token` |
 | `secret versions` | `soha secret versions <secret-id> [options]` | List immutable secret versions. | `soha secret versions registry-token` |
-| `secret rotate` | `soha secret rotate <secret-id> [options]` | Create a new secret version from a hidden value. | `printf '%s\n' "$REGISTRY_TOKEN" \| soha secret rotate registry-token` |
+| `secret rotate` | `soha secret rotate <secret-id> [options]` | Create a local or Vault KV v2 secret version. | `printf '%s\n' "$REGISTRY_TOKEN" \| soha secret rotate registry-token`<br>`soha secret rotate registry-token --vault-mount secret --vault-path demo/app --vault-key token --vault-version 4` |
 | `secret revoke-version` | `soha secret revoke-version <secret-id> <version> [options]` | Revoke a secret version. | `soha secret revoke-version registry-token 1` |
 | `token list` | `soha token list [options]` | List personal access tokens. | `soha token list` |
 | `token create` | `soha token create [options]` | Create a personal access token. | `soha token create --name local --permission-keys ai.gateway.view` |

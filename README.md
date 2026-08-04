@@ -25,7 +25,7 @@ version, and rechecks the cached binary before execution.
 Install a tagged module with Go:
 
 ```sh
-go install github.com/opensoha/soha-cli/cmd/soha@v0.1.0
+go install github.com/opensoha/soha-cli/cmd/soha@v0.1.5
 soha version
 ```
 
@@ -35,7 +35,7 @@ release, then verify it against `checksums.txt` before placing `soha` on your
 
 ```sh
 sha256sum -c checksums.txt --ignore-missing
-tar -xzf soha_0.1.0_linux_amd64.tar.gz
+tar -xzf soha_0.1.5_linux_amd64.tar.gz
 install -m 0755 soha /usr/local/bin/soha
 ```
 
@@ -238,7 +238,7 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `project plan`, `project apply` | Plan and apply dependency-ordered `.soha/project.yaml` environments through live Gateway capabilities. | `soha project plan`, `soha project apply --yes` |
 | `resource read` | Read an AI Gateway MCP resource. | `soha resource read soha://k8s/runtime --context-json '{"clusterId":"local"}'` |
 | `prompt get` | Get an AI Gateway MCP prompt. | `soha prompt get soha.k8s.diagnose_workload --arguments-json '{}'` |
-| `secret list`, `secret create`, `secret rotate` | Manage write-only Secret Store metadata and immutable versions. | `soha secret list --scope-type project --scope-id demo`, `soha secret rotate registry-token` |
+| `secret list`, `secret create`, `secret rotate` | Manage write-only Secret Store metadata and immutable local or Vault KV v2 versions. | `soha secret list --scope-type project --scope-id demo`, `soha secret create --name registry-token --vault-mount secret --vault-path demo/app --vault-key token --vault-version 3` |
 | `token list` | List personal access tokens. | `soha token list` |
 | `token create` | Create a personal access token. | `soha token create --name local --permission-keys ai.gateway.view` |
 | `token revoke` | Revoke a personal access token. | `soha token revoke pat_123` |
