@@ -346,9 +346,9 @@ func (c APIClient) Capabilities(ctx context.Context, headers map[string]string) 
 	return out.Data, nil
 }
 
-func (c APIClient) ClusterCapabilities(ctx context.Context) ([]ClusterCapabilityMatrixEntry, error) {
+func (c APIClient) ClusterCapabilities(ctx context.Context, headers map[string]string) ([]ClusterCapabilityMatrixEntry, error) {
 	var out itemsResponse[ClusterCapabilityMatrixEntry]
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/clusters/capabilities", c.Token, nil, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/clusters/capabilities", c.Token, headers, nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Items, nil

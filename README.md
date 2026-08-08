@@ -146,6 +146,25 @@ endpoint. Run `soha mcp --profile <name> --base-url <profile-server>`, or use
 configuration. Authentication still comes from the selected profile or the
 one-command `SOHA_TOKEN` override.
 
+### Kubernetes Workbench Through MCP
+
+Kubernetes support uses the same manifest-driven MCP server; there is no
+separate kubeconfig or `soha k8s` execution path. Install the verified
+`k8s-sre` runtime skill and bind the generated MCP client configuration to it:
+
+```sh
+soha setup --client codex \
+  --mode both \
+  --skills k8s-sre \
+  --skill-id k8s-sre
+soha capabilities --output inputs
+soha diagnose --tool k8s.pods.logs --resource soha://k8s/runtime
+```
+
+The live Gateway manifest remains authoritative for available tools and input
+schemas. Direct CLI automation can invoke the same read-only surface with
+`soha tool call k8s.pods.list --input-json '{"clusterId":"local"}'`.
+
 ### Agent And IDE Setup
 
 `soha setup --client codex` writes a `[mcp_servers.soha]` entry to Codex
@@ -260,7 +279,7 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `profile use` | Switch the current profile. | `soha profile use cloud` |
 | `context show` | Show AI client context headers. | `soha context show` |
 | `context set` | Update AI client context headers. | `soha context set --skill-id k8s-sre --source codex` |
-| `mcp` | Run the Soha MCP stdio server against official SaaS by default. | `soha mcp`, `soha mcp --base-url https://soha.internal.example` |
+| `mcp` | Run the Soha MCP stdio server against official SaaS by default. | `soha mcp`, `soha mcp --skill-id k8s-sre` |
 | `mcp start` | Compatibility form of the MCP stdio server. | `soha mcp start --profile default` |
 | `mcp install` | Print MCP client configuration. | `soha mcp install --command /usr/local/bin/soha` |
 | `skill list` | List Soha skills from a local or verified release source. | `soha skill list` |
@@ -269,7 +288,7 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `skill update` | Update managed skills from the latest stable release. | `soha skill update`, `soha skill update --all` |
 | `skill remove` | Remove managed skills while retaining rollback state. | `soha skill remove k8s-sre` |
 | `skill rollback` | Restore the previous verified generation. | `soha skill rollback` |
-| `setup` | Configure MCP, skills, or both for an AI agent or IDE. | `soha setup --client codex --mode both`, `soha setup --client codex --check` |
+| `setup` | Configure MCP, skills, or both for an AI agent or IDE. | `soha setup --client codex --mode both --skills k8s-sre --skill-id k8s-sre`, `soha setup --client codex --check` |
 | `add` | Compatibility alias for the previous setup flow. | `soha add codex --profile local --base-url http://localhost:8080` |
 | `plugin search` | Search plugin marketplace entries. | `soha plugin search --query k8s` |
 | `plugin show` | Show marketplace, installed, or manifest details. | `soha plugin show opensoha.k8s-sre-pack --installed` |

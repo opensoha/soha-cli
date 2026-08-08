@@ -282,7 +282,14 @@ func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
 		return err
 	}
 	if domainValue == "platform" {
-		return runPlatformCapabilities(ctx, rt, name, profile, formatValue)
+		return runPlatformCapabilities(
+			ctx,
+			rt,
+			name,
+			profile,
+			formatValue,
+			gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source),
+		)
 	}
 	manifest, err := gatewayClient(rt, profile).Capabilities(ctx, gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source))
 	if err != nil {
@@ -323,8 +330,8 @@ func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
 	}
 }
 
-func runPlatformCapabilities(ctx context.Context, rt Runtime, profileName string, profile ProfileConfig, formatValue string) error {
-	items, err := gatewayClient(rt, profile).ClusterCapabilities(ctx)
+func runPlatformCapabilities(ctx context.Context, rt Runtime, profileName string, profile ProfileConfig, formatValue string, headers map[string]string) error {
+	items, err := gatewayClient(rt, profile).ClusterCapabilities(ctx, headers)
 	if err != nil {
 		return err
 	}

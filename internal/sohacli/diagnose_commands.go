@@ -39,7 +39,7 @@ func runDiagnose(ctx context.Context, args []string, rt Runtime) error {
 	}
 	var clusterCapabilities []ClusterCapabilityMatrixEntry
 	if strings.TrimSpace(*clusterCapabilityKey) != "" {
-		clusterCapabilities, err = gatewayClient(rt, profile).ClusterCapabilities(ctx)
+		clusterCapabilities, err = gatewayClient(rt, profile).ClusterCapabilities(ctx, nil)
 		if err != nil {
 			return err
 		}

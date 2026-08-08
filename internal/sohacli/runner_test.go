@@ -607,6 +607,16 @@ func TestRunPlatformCapabilitiesUsesClusterCapabilityMatrix(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer access-token" {
 			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
 		}
+		for header, want := range map[string]string{
+			"X-Soha-AI-Client-ID":   "client-1",
+			"X-Soha-AI-Client":      "Codex",
+			"X-Soha-Skill-ID":       "k8s-sre",
+			"X-Soha-Source":         "cli-test",
+		} {
+			if got := r.Header.Get(header); got != want {
+				t.Fatalf("%s header = %q, want %q", header, got, want)
+			}
+		}
 		writeJSON(t, w, map[string]any{"items": []map[string]any{
 			{
 				"key":              "resource.yaml.apply",
@@ -631,7 +641,16 @@ func TestRunPlatformCapabilitiesUsesClusterCapabilityMatrix(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	code := Run(context.Background(), []string{"capabilities", "--profile", "dev", "--domain", "platform", "--output", "names"}, Runtime{
+	code := Run(context.Background(), []string{
+		"capabilities",
+		"--profile", "dev",
+		"--domain", "platform",
+		"--output", "names",
+		"--ai-client-id", "client-1",
+		"--ai-client", "Codex",
+		"--skill-id", "k8s-sre",
+		"--source", "cli-test",
+	}, Runtime{
 		Out:        &out,
 		Err:        &bytes.Buffer{},
 		ConfigPath: configPath,

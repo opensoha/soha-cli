@@ -272,7 +272,7 @@ var topLevelCommandSpecs = []commandSpec{
 			{Name: "start", Usage: "soha mcp start [options]", Summary: "Compatibility form of soha mcp", Examples: []string{"soha mcp start --profile default"}},
 			{Name: "install", Usage: "soha mcp install [options]", Summary: "Print MCP client configuration", Examples: []string{"soha mcp install --command /usr/local/bin/soha", "soha mcp install --base-url https://soha.example.com"}},
 		},
-		Examples: []string{"soha mcp", "soha mcp --base-url https://soha.example.com"},
+		Examples: []string{"soha mcp", "soha mcp --skill-id k8s-sre", "soha mcp --base-url https://soha.example.com"},
 		Handler:  runMCP,
 	},
 	{
@@ -293,7 +293,7 @@ var topLevelCommandSpecs = []commandSpec{
 		Name:            "setup",
 		Usage:           "soha setup [target] [--client target] [--mode mcp|skill|both] [--scope user|project] [options]",
 		Summary:         "Configure Soha MCP and skills for an AI agent or IDE",
-		Examples:        []string{"soha setup --client codex", "soha setup --client codex --scope project", "soha setup --client claude --mode mcp --base-url https://soha.example.com", "soha setup --client codex --check"},
+		Examples:        []string{"soha setup --client codex", "soha setup --client codex --scope project", "soha setup --client codex --mode both --skills k8s-sre --skill-id k8s-sre", "soha setup --client claude --mode mcp --base-url https://soha.example.com", "soha setup --client codex --check"},
 		CompletionWords: []string{"codex", "claude", "cursor", "kiro", "gemini", "antigravity", "antigravity-ide", "trae", "all"},
 		Handler:         runSetup,
 	},
