@@ -78,7 +78,7 @@ the workflow or documentation is stale, then update both in the same change.
 
 ## Complete CI Gate
 
-Use Go `1.26.5`, Node.js `20.x`, `govulncheck v1.3.0`, and
+Use Go `1.26.6`, Node.js `20.x`, `govulncheck v1.3.0`, and
 `golangci-lint v2.9.0`. Run release-sensitive checks with the parent workspace
 disabled:
 

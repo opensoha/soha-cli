@@ -72,7 +72,7 @@ types and local HTTP calls. It should remain testable without a real server.
 
 ## CI Gate
 
-Use Go `1.26.5` and run the release-sensitive gate with the root workspace disabled:
+Use Go `1.26.6` and run the release-sensitive gate with the root workspace disabled:
 
 ```bash
 GOWORK=off go mod tidy

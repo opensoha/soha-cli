@@ -1,10 +1,10 @@
 module github.com/opensoha/soha-cli
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/opensoha/soha-contracts v0.1.7
+	github.com/opensoha/soha-contracts v0.1.13
 	golang.org/x/term v0.27.0
 	gopkg.in/yaml.v3 v3.0.1
 )

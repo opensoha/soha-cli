@@ -25,7 +25,7 @@ version, and rechecks the cached binary before execution.
 Install a tagged module with Go:
 
 ```sh
-go install github.com/opensoha/soha-cli/cmd/soha@v0.1.5
+go install github.com/opensoha/soha-cli/cmd/soha@v0.1.6
 soha version
 ```
 
@@ -35,7 +35,7 @@ release, then verify it against `checksums.txt` before placing `soha` on your
 
 ```sh
 sha256sum -c checksums.txt --ignore-missing
-tar -xzf soha_0.1.5_linux_amd64.tar.gz
+tar -xzf soha_0.1.6_linux_amd64.tar.gz
 install -m 0755 soha /usr/local/bin/soha
 ```
 
@@ -46,7 +46,7 @@ command for installed binaries.
 
 ## Build
 
-Go 1.26.5 or newer is required because the CLI uses the official MCP Go SDK.
+Go 1.26.6 or newer is required because the CLI uses the official MCP Go SDK.
 
 ```sh
 go test ./...
