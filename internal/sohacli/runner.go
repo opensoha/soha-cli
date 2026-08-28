@@ -49,7 +49,7 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 	var err error
 	args, rt.HTTPTimeout, err = resolveRuntimeTimeout(args, rt.HTTPTimeout)
 	if err != nil {
-		_, _ = fmt.Fprintln(rt.Err, "error:", err)
+		_, _ = fmt.Fprintln(rt.Err, "error:", redactSensitiveText(err.Error()))
 		return 2
 	}
 	if len(args) == 0 {
@@ -92,7 +92,7 @@ func Run(ctx context.Context, args []string, rt Runtime) int {
 			_, _ = fmt.Fprintln(rt.Err, "error: interrupted")
 			return 130
 		}
-		_, _ = fmt.Fprintln(rt.Err, "error:", err)
+		_, _ = fmt.Fprintln(rt.Err, "error:", redactSensitiveText(err.Error()))
 		if isUsageError(err) {
 			return 2
 		}

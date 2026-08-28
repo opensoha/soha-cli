@@ -608,10 +608,10 @@ func TestRunPlatformCapabilitiesUsesClusterCapabilityMatrix(t *testing.T) {
 			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
 		}
 		for header, want := range map[string]string{
-			"X-Soha-AI-Client-ID":   "client-1",
-			"X-Soha-AI-Client":      "Codex",
-			"X-Soha-Skill-ID":       "k8s-sre",
-			"X-Soha-Source":         "cli-test",
+			"X-Soha-AI-Client-ID": "client-1",
+			"X-Soha-AI-Client":    "Codex",
+			"X-Soha-Skill-ID":     "k8s-sre",
+			"X-Soha-Source":       "cli-test",
 		} {
 			if got := r.Header.Get(header); got != want {
 				t.Fatalf("%s header = %q, want %q", header, got, want)
@@ -889,6 +889,28 @@ func TestAPIClientHTTPErrorPaths(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestRunRedactsBackendErrorOnStderr(t *testing.T) {
+	const secret = "backend-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"Authorization=Bearer ` + secret + `"}}`))
+	}))
+	defer server.Close()
+
+	var stderr bytes.Buffer
+	code := Run(context.Background(), []string{"capabilities", "--profile", "dev"}, Runtime{
+		Out:        &bytes.Buffer{},
+		Err:        &stderr,
+		ConfigPath: writeTestConfig(t, server.URL),
+	})
+	if code != 1 {
+		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), secret) || !strings.Contains(stderr.String(), "[REDACTED]") {
+		t.Fatalf("stderr did not redact backend error: %q", stderr.String())
 	}
 }
 

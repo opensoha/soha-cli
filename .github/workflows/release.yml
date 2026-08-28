@@ -72,7 +72,7 @@ jobs:
             EXT=".exe"
           fi
           mkdir -p out dist
-          go build -trimpath -ldflags "-s -w -X github.com/opensoha/soha-cli/internal/sohacli.version=${VERSION} -X github.com/opensoha/soha-cli/internal/sohacli.commit=${GITHUB_SHA} -X github.com/opensoha/soha-cli/internal/sohacli.date=${BUILD_DATE}" -o "out/soha${EXT}" ./cmd/soha
+          GOWORK=off go build -trimpath -ldflags "-s -w -X github.com/opensoha/soha-cli/internal/sohacli.version=${VERSION} -X github.com/opensoha/soha-cli/internal/sohacli.commit=${GITHUB_SHA} -X github.com/opensoha/soha-cli/internal/sohacli.date=${BUILD_DATE}" -o "out/soha${EXT}" ./cmd/soha
           cp "out/soha${EXT}" "dist/${NAME}${EXT}"
           if [[ "${GOOS}" == "windows" ]]; then
             (cd out && zip -q "../dist/${NAME}.zip" "soha${EXT}")

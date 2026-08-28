@@ -63,6 +63,22 @@ var topLevelCommandSpecs = []commandSpec{
 		Handler: runOperation,
 	},
 	{
+		Name:    "compute",
+		Usage:   "soha compute <capabilities|overview|access-sources|providers|provider-instances|resources|tasks> [options]",
+		Summary: "Inspect and operate the unified compute resource surface",
+		Subcommands: []commandSpec{
+			{Name: "capabilities", Usage: "soha compute capabilities [options]", Summary: "Show compute capability rollout and availability", Examples: []string{"soha compute capabilities --output yaml"}},
+			{Name: "overview", Usage: "soha compute overview [options]", Summary: "Show the permission-filtered compute overview", Examples: []string{"soha compute overview"}},
+			{Name: "access-sources", Usage: "soha compute access-sources list [options]", Summary: "List compute access sources", CompletionWords: []string{"list"}},
+			{Name: "providers", Usage: "soha compute providers list [options]", Summary: "List compute provider descriptors", CompletionWords: []string{"list"}},
+			{Name: "provider-instances", Usage: "soha compute provider-instances <list|get|health|discover> [options]", Summary: "Inspect and refresh provider instances", CompletionWords: []string{"list", "get", "health", "discover"}},
+			{Name: "resources", Usage: "soha compute resources <get|relations|action> <domain> <kind> <id> [action] [options]", Summary: "Read resource data, relations, or run a typed action", CompletionWords: []string{"get", "relations", "action"}},
+			{Name: "tasks", Usage: "soha compute tasks <list|get|logs|cancel|retry|wait> [options]", Summary: "List, inspect, and control compute tasks", CompletionWords: []string{"list", "get", "logs", "cancel", "retry", "wait"}},
+		},
+		Examples: []string{"soha compute overview", "soha compute resources relations virtualization vm vm-1", "soha compute tasks list --status failed"},
+		Handler:  runCompute,
+	},
+	{
 		Name:    "tool",
 		Usage:   "soha tool call <name> [--preview] [--yes] [options]",
 		Summary: "Invoke an AI Gateway tool with JSON input",

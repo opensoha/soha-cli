@@ -386,12 +386,7 @@ func (c APIClient) GetComputeTask(ctx context.Context, domain ComputeTaskDomain,
 }
 
 func (c APIClient) CancelComputeTask(ctx context.Context, domain ComputeTaskDomain, taskID string, input ComputeTaskMutationRequest) (ComputeTaskView, error) {
-	var out itemResponse[ComputeTaskView]
-	path := computeTaskPath(domain, taskID) + "/cancel"
-	if err := c.doJSON(ctx, http.MethodPost, path, c.Token, nil, input, &out); err != nil {
-		return ComputeTaskView{}, err
-	}
-	return out.Data, nil
+	return c.CancelComputeTaskWithKey(ctx, domain, taskID, computeIdempotencyKey(string(domain), taskID, "cancel", input), input)
 }
 
 func computeTaskPath(domain ComputeTaskDomain, taskID string) string {

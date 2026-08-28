@@ -253,6 +253,7 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `capabilities` | Print the AI Gateway manifest. | `soha capabilities --output names`, `soha capabilities --output inputs` |
 | `logs query`, `logs tail` | Query or follow cluster, Docker project, and delivery environment logs. | `soha logs query --source cluster --cluster-id local --namespace default`, `soha logs tail --source docker --project-id project-1` |
 | `operation get`, `operation wait`, `operation cancel` | Inspect and control asynchronous compute operations. | `soha operation wait virtualization task-1`, `soha operation cancel container_runtime task-2 --yes` |
+| `compute` | Inspect compute capabilities, providers, resources, relations, and tasks through the unified Compute API. | `soha compute overview`, `soha compute resources relations virtualization vm vm-1`, `soha compute tasks list --status failed` |
 | `tool call` | Invoke an AI Gateway tool with protected-call confirmation and redacted preview. | `soha tool call k8s.pods.list --input-json '{"clusterId":"local"}'`, `soha tool call delivery.actions.trigger --preview` |
 | `project plan`, `project apply` | Plan and apply dependency-ordered `.soha/project.yaml` environments through live Gateway capabilities. | `soha project plan`, `soha project apply --yes` |
 | `resource read` | Read an AI Gateway MCP resource. | `soha resource read soha://k8s/runtime --context-json '{"clusterId":"local"}'` |
