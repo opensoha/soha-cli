@@ -1,18 +1,6 @@
 ---
 name: soha-cli
-description: >-
-  Implement or review the standalone `soha` command-line client in
-  `cmd/soha/**`, `internal/sohacli/**`, `docs/commands.md`, `Dockerfile`,
-  release workflows, and CLI-facing README content. Use when adding commands,
-  flags, completion entries, generated command docs, profile or token handling,
-  auth refresh behavior, AI Gateway tool/resource/prompt calls, MCP stdio
-  support through the official MCP Go SDK, `soha setup`/`soha add` agent and
-  IDE integration, the `@opensoha/cli` npm launcher, verified skill release installation,
-  plugin marketplace commands, AI platform knowledge/evaluation/runtime
-  commands, cloud diagnostics, CI gates, release integrity, or CLI packaging. This skill
-  enforces stdlib `flag` command patterns, `Runtime` I/O injection, safe local
-  profile storage, redacted output, released `soha-contracts` compatibility,
-  and no imports from the core `soha` repository internals.
+description: Change or review the standalone soha CLI, authentication/profile handling, command metadata, or release packaging. Ordinary CLI use does not require this implementation skill.
 ---
 
 # Soha CLI
@@ -25,7 +13,7 @@ types and local HTTP calls. It should remain testable without a real server.
 
 ## Workflow
 
-1. Read repository `AGENTS.md`, `internal/sohacli/command_metadata.go`, and the relevant CI workflow before changing behavior. Command help, docs, completion hints, and dispatch flow from the metadata; CI and release behavior flow from the workflows.
+1. Use `internal/sohacli/command_metadata.go` for command-surface changes. Read CI workflows for build or release changes; command help, docs, completion, and dispatch flow from metadata.
 2. Inspect the working tree and preserve unrelated edits. Add behavior in the smallest existing owner: profiles/context, MCP, skills, plugins, governance, AI platform/knowledge/evaluation, cloud diagnostics, tokens, service accounts, or Gateway calls.
 3. Keep the `Run(ctx, args, Runtime)` boundary. Use `Runtime.In`, `Runtime.Out`, `Runtime.Err`, `Runtime.ConfigPath`, and injectable HTTP clients in tests; do not write directly to `os.Stdout` or `os.Stderr` outside `cmd/soha/main.go`.
 4. Use stdlib `flag` plus `newRuntimeFlagSet`. Return errors from handlers and let `Run` map them to exit codes.
@@ -56,7 +44,7 @@ types and local HTTP calls. It should remain testable without a real server.
 - For login and profile changes, cover `0700`/`0600` permissions, atomic writes, non-interactive credentials, token rotation, and secret-free errors.
 - For skill releases, cover a real tar.gz fixture, latest GitHub Release resolution, explicit version pins, cache reuse and tampering, checksum mismatch, unsafe archive members, generation activation/rollback, scope precedence, audit output, and the packaged release smoke path.
 - Run `npm test` and `npm pack --dry-run` in `npm/cli` when launcher or release assets change.
-- Run `go test ./...` for normal changes.
+- Run affected package tests for local behavior changes; documentation-only collaboration edits need metadata and link checks, not runtime builds.
 - Run `GOWORK=off go test ./...` before changes that touch contracts, module state, Dockerfile, or release behavior.
 - Run `go vet ./...` and `go test -race ./...` for concurrency, token refresh, MCP stdio, or release-sensitive work.
 
