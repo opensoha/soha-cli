@@ -133,6 +133,25 @@ soha mcp install --profile default --command /usr/local/bin/soha
 soha setup --client codex --profile default --mode both --command /usr/local/bin/soha
 ```
 
+### Capability Versions And Tasks
+
+Versioned Gateway tools expose `version` and `execution` in the manifest. Tool
+calls, project plan/apply, and the MCP adapter send the discovered version back
+as `capabilityVersion`; stale versions fail instead of silently selecting a new
+contract. A saved call can require its version explicitly with
+`soha tool call <name> --capability-version <version>`. Legacy tools remain
+callable without claiming these guarantees.
+
+An invocation with `result: success` may have only submitted asynchronous work.
+When the response contains `task`, retain its domain `kind`, `id`, and
+`statusCall`, then use that registered status tool to continue under current
+authorization. `terminal` describes the domain operation and does not establish
+application health or URL reachability. MCP returns the same Gateway envelope
+in `structuredContent` and text; the underlying domain output schema is metadata
+because approvals and redaction can change the visible output. Idempotency
+annotations use explicit execution contracts. Restart the MCP process after a
+capability version change to reload its tool catalog.
+
 ### MCP Endpoint Selection
 
 `soha mcp` is the direct stdio server entry point. `soha mcp start` remains as
@@ -241,6 +260,95 @@ profile. For new profiles, the default API base URL is
 `--runtime-skill-dest` to target non-default locations. Restart Codex or open a
 new Codex session after running it so MCP servers and skills are reloaded.
 
+## Delivery workflows and batches
+
+Delivery documents use `delivery.soha.io/v1alpha1` and identify `BuildTemplate`,
+`DeploymentTemplate`, `WorkflowTemplate`, or `Workflow`. YAML and JSON describe the
+same object. Validate locally, then preview server permissions, references and
+revision conflicts before importing:
+
+```bash
+soha delivery documents validate --file build.yaml
+soha delivery documents preview --file build.yaml --file workflow.json --profile local
+soha delivery documents import --preview-id <id> --candidate-digest <candidateDigest> --idempotency-key import-1 --yes --profile local
+soha delivery documents export BuildTemplate <id> --version 1 --format yaml --out build-v1.yaml --profile local
+```
+
+Import uses the reviewed preview; after an uncertain response, retry with the same
+preview ID, digest and idempotency key. It saves drafts/configuration without
+publishing or executing. A preview expires after 30 minutes. `--file -` reads one
+document from stdin. Files are bounded to 1 MiB each, 2 MiB combined, and 100 files.
+Export writes the raw document to stdout or creates `--out` without overwriting.
+Template exports require a published version; Workflow exports its saved definition.
+
+Git sources use stored repository connections and create drafts through the same
+reviewed import path. `sync` resolves one commit and saves its preview; `apply`
+consumes that exact preview. Neither publishes templates nor starts delivery:
+
+```bash
+soha delivery template-sources create --input source.json --yes --profile local
+soha delivery template-sources sync <source-id> --input sync.json --yes --profile local
+soha delivery template-sources run <source-id> --run-id <run-id> --profile local
+soha delivery template-sources apply <source-id> --run-id <run-id> --input apply.json --yes --profile local
+soha delivery template-sources objects <source-id> --offset 0 --limit 50 --profile local
+soha delivery documents source BuildTemplate <id> --version 1 --profile local
+```
+
+`source.json` contains `name`, `repositoryId`, `refType` (`branch`, `tag`, or
+`commit`), `refValue`, repository-relative `path` (`.` for root), `kinds`, `enabled`,
+and `expectedGeneration: 0`. Updates require the loaded generation. Optional
+`includePatterns`/`excludePatterns` select files; credentials stay in the stored
+connection. `sync.json` requires `expectedGeneration` and an 8–128 byte
+`idempotencyKey`; `apply.json` also requires the preview's exact `candidateDigest`.
+Retry an uncertain response with the same run, generation, digest and key.
+
+Review all `objects` pages before `detach` or `remove`. Both require an input with
+`expectedGeneration` and explicit `disposition: "keep"` or `"deprecate"`; detach
+also takes `--kind` and `--object-id`. Workflow supports `keep` only. These actions
+preserve objects, bindings, executions and immutable version provenance. Active
+Git definitions remain read-only in Soha until detached; copying creates a new
+Soha-managed object. Source reads that fail validation return a nonzero exit code
+and the persisted run with diagnostics.
+
+Names never imply overwrite. For updates, use `preview --input import-request.json`
+with explicit per-file targets and revisions (the latter is a Workflow version):
+
+```json
+{"files":[{"path":"build.yaml","content":"<YAML or JSON document>","targetId":"template-1","expectedRevision":3}]}
+```
+
+Save a workflow with `soha delivery workflows create --input workflow.json --yes
+--profile local`. The JSON contains `definition`, including its name, targets,
+execution mode, and `stopOnFailure` (defaults to true). Updating a workflow also
+requires the last observed `expectedVersion`; saving never starts delivery.
+
+Start a saved revision with a batch input such as:
+
+```json
+{"idempotencyKey":"release-20260912-01","workflowId":"workflow-1","workflowVersion":1}
+```
+
+```bash
+soha delivery batches create --input batch.json --yes --profile local --timeout 3m
+soha delivery batches get batch-1 --profile local
+soha delivery plans get plan-1 --profile local
+soha delivery plans approve plan-1 --comment reviewed --yes --profile local
+soha delivery batches cancel batch-1 --reason paused --yes --profile local
+```
+
+For an ad hoc batch, supply `definition` instead of the workflow ID and version.
+Reuse the same idempotency key after an uncertain response. An intentional retry
+uses a new key and `retryOfBatchId`, preserving the previous attempt. Review the
+final plan after its image digest and manifest are known; `--yes` only skips the
+CLI prompt. Environment authorization and approval remain enforced by the server.
+Cancellation may remain `canceling` until running tasks acknowledge it; completed
+deployments remain recorded. JSON and YAML output retain the API envelope and
+permission-filtered batch status, counts, and `partialView` marker.
+The server resumes batch-owned plans after approval. Standalone plan creation and
+confirmation use the public DeliveryPlan API or the Gateway tools
+`delivery.plans.create` and `delivery.plans.confirm` via `soha tool call`.
+The `delivery plans` command group supports `get`, `approve`, and `reject`.
+
 ## Command Matrix
 
 For the generated command reference, run `soha docs --format markdown` or read
@@ -254,6 +362,7 @@ For the generated command reference, run `soha docs --format markdown` or read
 | `logs query`, `logs tail` | Query or follow cluster, Docker project, and delivery environment logs. | `soha logs query --source cluster --cluster-id local --namespace default`, `soha logs tail --source docker --project-id project-1` |
 | `operation get`, `operation wait`, `operation cancel` | Inspect and control asynchronous compute operations. | `soha operation wait virtualization task-1`, `soha operation cancel container_runtime task-2 --yes` |
 | `compute` | Inspect compute capabilities, providers, resources, relations, and tasks through the unified Compute API. | `soha compute overview`, `soha compute resources relations virtualization vm vm-1`, `soha compute tasks list --status failed` |
+| `delivery` | Save release workflows, run or cancel batches, and inspect or decide final deployment plans. | `soha delivery batches list --profile local`, `soha delivery plans get plan-1 --profile local` |
 | `tool call` | Invoke an AI Gateway tool with protected-call confirmation and redacted preview. | `soha tool call k8s.pods.list --input-json '{"clusterId":"local"}'`, `soha tool call delivery.actions.trigger --preview` |
 | `project plan`, `project apply` | Plan and apply dependency-ordered `.soha/project.yaml` environments through live Gateway capabilities. | `soha project plan`, `soha project apply --yes` |
 | `resource read` | Read an AI Gateway MCP resource. | `soha resource read soha://k8s/runtime --context-json '{"clusterId":"local"}'` |

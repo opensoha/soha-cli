@@ -11,9 +11,13 @@ import (
 
 func runAI(ctx context.Context, args []string, rt Runtime) error {
 	if len(args) == 0 {
-		return fmt.Errorf("ai requires a subcommand: evaluation or memory")
+		return fmt.Errorf("ai requires a subcommand: task, evaluation, or memory")
 	}
 	switch args[0] {
+	case "inspection":
+		return runInspection(ctx, args[1:], rt)
+	case "task":
+		return runCapabilityTask(ctx, args[1:], rt)
 	case "evaluation":
 		return runAIEvaluation(ctx, args[1:], rt)
 	case "memory":

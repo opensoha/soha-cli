@@ -113,6 +113,20 @@ var topLevelCommandSpecs = []commandSpec{
 		Handler: runProject,
 	},
 	{
+		Name:    "delivery",
+		Usage:   "soha delivery <batches|workflows|plans|documents|template-sources|triggers> <action> [options]",
+		Summary: "Run delivery batches and review their final deployment plans",
+		Subcommands: []commandSpec{
+			{Name: "triggers", Usage: "soha delivery triggers <list|get|create|update|events> [id] [options]", Summary: "Configure signed Git webhooks, polling and release calendars; send credentials through stdin or a private file", CompletionWords: []string{"list", "get", "create", "update", "events"}, Examples: []string{"soha delivery triggers list --target-kind workflow --target-id workflow-1 --profile local", "soha delivery triggers create --input - --yes --profile local", "soha delivery triggers update trigger-1 --input trigger.json --yes --profile local", "soha delivery triggers events trigger-1 --limit 50 --offset 0 --profile local"}},
+			{Name: "documents", Usage: "soha delivery documents <validate|preview|import|export|source> [options]", Summary: "Validate YAML/JSON offline, preview authorized changes, import reviewed drafts, or export a version", CompletionWords: []string{"validate", "preview", "import", "export", "source"}, Examples: []string{"soha delivery documents validate --file build.yaml", "soha delivery documents preview --file build.yaml --file workflow.json --profile local", "soha delivery documents preview --input import-request.json --profile local", "soha delivery documents import --preview-id preview-1 --candidate-digest sha256:reviewed --idempotency-key import-attempt-1 --yes --profile local", "soha delivery documents export BuildTemplate template-1 --version 2 --format yaml --out build.yaml --profile local"}},
+			{Name: "template-sources", Usage: "soha delivery template-sources <list|get|create|update|objects|sync|runs|run|apply|detach|remove> [id] [options]", Summary: "Manage Git sources, review immutable sync previews, and import drafts without publishing or executing", CompletionWords: []string{"list", "get", "create", "update", "objects", "sync", "runs", "run", "apply", "detach", "remove"}, Examples: []string{"soha delivery template-sources list --profile local", "soha delivery template-sources sync source-1 --input sync.json --yes --profile local", "soha delivery template-sources run source-1 --run-id run-1 --profile local", "soha delivery template-sources apply source-1 --run-id run-1 --input apply.json --yes --profile local", "soha delivery template-sources objects source-1 --limit 50 --offset 0 --profile local", "soha delivery documents source BuildTemplate template-1 --version 2 --profile local"}},
+			{Name: "batches", Usage: "soha delivery batches <list|get|create|cancel> [id] [options]", Summary: "Inspect, start, or stop a delivery batch", CompletionWords: []string{"list", "get", "create", "cancel"}, Examples: []string{"soha delivery batches list --application-id app-1 --profile local", "soha delivery batches create --input batch.json --yes --profile local", "soha delivery batches cancel batch-1 --reason paused --yes --profile local"}},
+			{Name: "workflows", Usage: "soha delivery workflows <list|get|create|update> [id] [options]", Summary: "Save versioned release workflows without starting execution", CompletionWords: []string{"list", "get", "create", "update"}, Examples: []string{"soha delivery workflows create --input workflow.json --yes --profile local", "soha delivery workflows update workflow-1 --input workflow.json --yes --profile local"}},
+			{Name: "plans", Usage: "soha delivery plans <get|approve|reject> <id> [options]", Summary: "Inspect or decide a final deployment plan under environment policy", CompletionWords: []string{"get", "approve", "reject"}, Examples: []string{"soha delivery plans get plan-1 --profile local", "soha delivery plans approve plan-1 --comment reviewed --yes --profile local"}},
+		},
+		Handler: runDelivery,
+	},
+	{
 		Name:    "resource",
 		Usage:   "soha resource read <uri> [options]",
 		Summary: "Read an AI Gateway MCP resource",
@@ -145,9 +159,11 @@ var topLevelCommandSpecs = []commandSpec{
 	},
 	{
 		Name:    "ai",
-		Usage:   "soha ai <evaluation|memory> [options]",
+		Usage:   "soha ai <task|evaluation|memory> [options]",
 		Summary: "Operate AI evaluation and governed memory workflows",
 		Subcommands: []commandSpec{
+			{Name: "inspection", Usage: "soha ai inspection <list|get|create|update|delete|run|runs> [options]", Summary: "Register governed inspections and follow durable trigger receipts", CompletionWords: []string{"list", "get", "create", "update", "delete", "run", "runs"}, Examples: []string{"soha ai inspection create --input inspection.json --yes --profile local", "soha ai inspection run inspect-1 --idempotency-key run-1 --expected-revision 2 --yes --profile local"}},
+			{Name: "task", Usage: "soha ai task <validate|create|list|get|wait|cancel|resume> [options]", Summary: "Validate a capability plan and submit, observe, or stop a durable goal", CompletionWords: []string{"validate", "create", "list", "get", "wait", "cancel", "resume"}, Examples: []string{"soha ai task validate --input goal.json --profile local", "soha ai task create --input goal.json --yes --profile local", "soha ai task wait task-1 --profile local"}},
 			{Name: "evaluation", Usage: "soha ai evaluation <run|replay|gate> [options]", Summary: "Execute evaluation runs, isolated replay, or release gates", Examples: []string{"soha ai evaluation run --executor-profile-id executor-1 eval-run-1", "soha ai evaluation replay --id replay-1 --baseline-run-id baseline-1 --candidate-run-id candidate-1 --executor-profile-id executor-1", "soha ai evaluation gate --policy-id policy-1 --baseline-run-id baseline-1 --candidate-run-id candidate-1"}, CompletionWords: []string{"run", "replay", "gate"}},
 			{Name: "memory", Usage: "soha ai memory <inspect|delete> [options]", Summary: "Inspect or delete governed memory records", Examples: []string{"soha ai memory inspect --owner-type user --owner-id user-1", "soha ai memory delete memory-1"}, CompletionWords: []string{"inspect", "delete"}},
 		},

@@ -160,7 +160,7 @@ func runProjectAction(ctx context.Context, action string, args []string, rt Runt
 			return fmt.Errorf("project apply declined; pass --yes for non-interactive use")
 		}
 	}
-	result, applyErr := applyProject(ctx, client, headers, manifest, steps, options)
+	result, applyErr := applyProject(ctx, client, headers, capabilities, manifest, steps, options)
 	if err := writeStructuredOutput(rt.Out, options.output, sanitizeCLIValue(result)); err != nil {
 		return err
 	}
@@ -317,7 +317,8 @@ func planProject(ctx context.Context, client APIClient, headers map[string]strin
 			return result, nil, fmt.Errorf("project step %q has no live plan or preflight capability", step.ID)
 		}
 		requestID := projectStepRequestID(manifest.Metadata.Name, step)
-		invocation, err := client.InvokeToolWithRequest(ctx, planToolName, projectStepInput(step, requestID, false), requestID+"-plan", step.SecretRefs, headers)
+		planTool, _ := findToolCapability(capabilities, planToolName)
+		invocation, err := client.InvokeCapability(ctx, planTool, projectStepInput(step, requestID, false), requestID+"-plan", step.SecretRefs, headers)
 		if err != nil {
 			return result, nil, fmt.Errorf("plan project step %q: %w", step.ID, err)
 		}
@@ -374,11 +375,15 @@ func projectHasProtectedTools(tools []ToolCapability) bool {
 	return false
 }
 
-func applyProject(ctx context.Context, client APIClient, headers map[string]string, manifest projectManifest, steps []projectStep, options projectCommandOptions) (projectRunResult, error) {
+func applyProject(ctx context.Context, client APIClient, headers map[string]string, capabilities Manifest, manifest projectManifest, steps []projectStep, options projectCommandOptions) (projectRunResult, error) {
 	result := projectRunResult{Project: manifest.Metadata.Name, Action: "apply", Ready: true, Status: "succeeded"}
 	for _, step := range steps {
 		requestID := projectStepRequestID(manifest.Metadata.Name, step)
-		invocation, err := client.InvokeToolWithRequest(ctx, step.Tool, projectStepInput(step, requestID, true), requestID, step.SecretRefs, headers)
+		tool, ok := findToolCapability(capabilities, step.Tool)
+		if !ok {
+			return result, fmt.Errorf("project step %q capability is unavailable", step.ID)
+		}
+		invocation, err := client.InvokeCapability(ctx, tool, projectStepInput(step, requestID, true), requestID, step.SecretRefs, headers)
 		if err != nil {
 			result.Status = "failed"
 			return result, fmt.Errorf("apply project step %q: %w", step.ID, err)

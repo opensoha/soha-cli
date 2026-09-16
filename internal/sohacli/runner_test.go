@@ -2490,6 +2490,8 @@ func TestRunCompletionPrintsScript(t *testing.T) {
 	}
 	for _, want := range []string{
 		"version",
+		"delivery",
+		"batches workflows plans",
 		"approval",
 		"add",
 		`add)`,
@@ -2512,6 +2514,7 @@ func TestRunDocsGeneratesMarkdown(t *testing.T) {
 	}
 	for _, want := range []string{
 		"# Soha CLI Command Reference",
+		"| `delivery batches` | `soha delivery batches <list\\|get\\|create\\|cancel> [id] [options]` |",
 		"Generated with `soha docs --format markdown`.",
 		"| `tool call` | `soha tool call <name> [--preview] [--yes] [options]` |",
 		"| `docs` | `soha docs [--format markdown]` |",
@@ -2587,6 +2590,8 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 					"version": "v1alpha1",
 					"tools": []map[string]any{{
 						"title":            "List Applications",
+						"version":          "1",
+						"execution":        map[string]any{"mode": "sync", "idempotent": true},
 						"name":             "delivery.applications.list",
 						"description":      "List delivery applications",
 						"domain":           "delivery",
@@ -2657,7 +2662,7 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 			}
 			input, _ := req["input"].(map[string]any)
 			refs, _ := req["secretRefs"].(map[string]any)
-			if input["search"] != "api" || input["_sohaSecretRefs"] != nil || refs["APP_TOKEN"] != "soha://secrets/app-token" {
+			if input["search"] != "api" || input["_sohaSecretRefs"] != nil || refs["APP_TOKEN"] != "soha://secrets/app-token" || req["capabilityVersion"] != "1" {
 				t.Fatalf("unexpected invoke payload %#v", req)
 			}
 			writeJSON(t, w, map[string]any{
@@ -2761,6 +2766,8 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 		t.Fatalf("MCP tools/list response missing tool annotations: %q", text)
 	}
 	for _, want := range []string{
+		`"capabilityVersion":"1"`,
+		`"execution":{"idempotent":true,"mode":"sync"}`,
 		`"requiredScopes":["toolBusinessLine","toolApplication"]`,
 		`"requiresApproval":false`,
 		`"riskLevel":"read"`,
@@ -2775,6 +2782,9 @@ func TestRunMCPStartProxiesToolsToGateway(t *testing.T) {
 	}
 	if !strings.Contains(text, "app-1") {
 		t.Fatalf("MCP tools/call response missing successful result: %q", text)
+	}
+	if !strings.Contains(text, `"structuredContent"`) || !strings.Contains(text, `"required":["toolName","riskLevel","requiresApproval","result"]`) {
+		t.Fatalf("MCP response must advertise and return the Gateway envelope: %q", text)
 	}
 	if !strings.Contains(text, `"uri":"soha://delivery/applications"`) || !strings.Contains(text, `"contents"`) {
 		t.Fatalf("MCP resources/read response missing resource content: %q", text)
@@ -2922,7 +2932,7 @@ func TestMCPToolAnnotationsMapRiskHints(t *testing.T) {
 		wantDestructive bool
 		wantIdempotent  bool
 	}{
-		{name: "read", riskLevel: "read", wantReadOnly: true, wantIdempotent: true},
+		{name: "read", riskLevel: "read", wantReadOnly: true},
 		{name: "analyze", riskLevel: "analyze"},
 		{name: "mutate", riskLevel: "mutate", wantDestructive: true},
 		{name: "execute", riskLevel: "execute", wantDestructive: true},

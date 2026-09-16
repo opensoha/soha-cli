@@ -182,6 +182,8 @@ func (s mcpServer) serve(ctx context.Context) error {
 			Capabilities: &mcpsdk.ServerCapabilities{},
 		},
 	)
+	s.addCapabilityTaskTools(server)
+	s.addInspectionTools(server)
 	for _, item := range manifest.Tools {
 		if err := s.addTool(server, item); err != nil {
 			return err
@@ -221,7 +223,7 @@ func (s mcpServer) addTool(server *mcpsdk.Server, item ToolCapability) error {
 		Annotations: mcpSDKToolAnnotations(item),
 	}
 	if len(item.OutputSchema) > 0 {
-		tool.OutputSchema = item.OutputSchema
+		tool.OutputSchema = mcpInvocationOutputSchema()
 	}
 	server.AddTool(tool, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		arguments := map[string]any{}
@@ -234,7 +236,7 @@ func (s mcpServer) addTool(server *mcpsdk.Server, item ToolCapability) error {
 		if err != nil {
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: err.Error()}
 		}
-		result, err := s.client.InvokeToolWithRequest(ctx, item.Name, arguments, "", secretRefs, s.headers)
+		result, err := s.client.InvokeCapability(ctx, item, arguments, "", secretRefs, s.headers)
 		if err != nil {
 			return mcpTextResult(redactSensitiveText(err.Error()), true), nil
 		}
@@ -242,7 +244,13 @@ func (s mcpServer) addTool(server *mcpsdk.Server, item ToolCapability) error {
 		if err != nil {
 			return nil, mcpBackendError(err)
 		}
-		return mcpTextResult(string(raw), false), nil
+		response := mcpTextResult(string(raw), false)
+		var structured map[string]any
+		if err := json.Unmarshal(raw, &structured); err != nil {
+			return nil, mcpBackendError(err)
+		}
+		response.StructuredContent = structured
+		return response, nil
 	})
 	return nil
 }
@@ -437,7 +445,31 @@ func mcpSohaToolMeta(item ToolCapability) map[string]any {
 		soha["riskLevel"] = item.RiskLevel
 	}
 	soha["requiresApproval"] = item.RequiresApproval
+	if item.Version != "" {
+		soha["capabilityVersion"] = item.Version
+	}
+	if item.Execution != nil {
+		soha["execution"] = item.Execution
+	}
+	soha["inputSemantics"], soha["outputSemantics"] = item.InputSemantics, item.OutputSemantics
+	soha["effects"], soha["producesAssessment"] = item.Effects, item.ProducesAssessment
+	if len(item.OutputSchema) > 0 {
+		soha["outputSchema"] = item.OutputSchema
+	}
 	return meta
+}
+
+func mcpInvocationOutputSchema() map[string]any {
+	// MCP returns the Gateway envelope. Domain output may be held for approval or
+	// redacted by policy, so its original schema belongs in capability metadata.
+	return map[string]any{
+		"type": "object", "required": []string{"toolName", "riskLevel", "requiresApproval", "result"},
+		"properties": map[string]any{
+			"toolName": map[string]any{"type": "string"}, "riskLevel": map[string]any{"type": "string"},
+			"requiresApproval": map[string]any{"type": "boolean"}, "result": map[string]any{"type": "string"},
+			"output": map[string]any{}, "task": map[string]any{"type": "object"},
+		},
+	}
 }
 
 func mcpSDKToolAnnotations(item ToolCapability) *mcpsdk.ToolAnnotations {
@@ -460,11 +492,12 @@ func mcpToolAnnotations(item ToolCapability) map[string]any {
 	riskLevel := strings.TrimSpace(item.RiskLevel)
 	readOnly := riskLevel == "read"
 	destructive := riskLevel == "mutate" || riskLevel == "execute" || riskLevel == "high"
+	idempotent := item.Execution != nil && item.Execution.Idempotent
 	return map[string]any{
 		"title":           firstNonEmptyString(strings.TrimSpace(item.Title), item.Name),
 		"readOnlyHint":    readOnly,
 		"destructiveHint": destructive,
-		"idempotentHint":  readOnly,
+		"idempotentHint":  idempotent,
 		"openWorldHint":   true,
 	}
 }

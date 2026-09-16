@@ -339,8 +339,16 @@ func (c APIClient) Refresh(ctx context.Context, refreshToken string) (refreshRes
 }
 
 func (c APIClient) Capabilities(ctx context.Context, headers map[string]string) (Manifest, error) {
+	return c.SearchCapabilities(ctx, headers, nil)
+}
+
+func (c APIClient) SearchCapabilities(ctx context.Context, headers map[string]string, filters url.Values) (Manifest, error) {
+	path := "/api/v1/ai-gateway/capabilities"
+	if len(filters) > 0 {
+		path += "?" + filters.Encode()
+	}
 	var out manifestResponse
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/ai-gateway/capabilities", c.Token, headers, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, c.Token, headers, nil, &out); err != nil {
 		return Manifest{}, err
 	}
 	return out.Data, nil
@@ -411,9 +419,16 @@ func (c APIClient) InvokeToolWithRequestID(ctx context.Context, toolName string,
 }
 
 func (c APIClient) InvokeToolWithRequest(ctx context.Context, toolName string, input map[string]any, requestID string, secretRefs map[string]string, headers map[string]string) (ToolInvocationResult, error) {
+	return c.InvokeCapability(ctx, ToolCapability{Name: toolName}, input, requestID, secretRefs, headers)
+}
+
+func (c APIClient) InvokeCapability(ctx context.Context, tool ToolCapability, input map[string]any, requestID string, secretRefs map[string]string, headers map[string]string) (ToolInvocationResult, error) {
 	var out invokeResponse
-	path := "/api/v1/ai-gateway/tools/" + url.PathEscape(toolName) + "/invoke"
+	path := "/api/v1/ai-gateway/tools/" + url.PathEscape(tool.Name) + "/invoke"
 	payload := map[string]any{"input": emptyInput(input)}
+	if tool.Version != "" {
+		payload["capabilityVersion"] = tool.Version
+	}
 	if requestID = strings.TrimSpace(requestID); requestID != "" {
 		payload["requestId"] = requestID
 	}

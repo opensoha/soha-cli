@@ -2,10 +2,12 @@
 
 ## Scope
 
-These rules apply to the entire `soha-cli` repository. Also follow the parent
-workspace `AGENTS.md`. Before changing CLI behavior, read `README.md`, the
-relevant workflow under `.github/workflows/`, and
-`.agents/skills/soha-cli/SKILL.md`.
+These rules apply to the entire `soha-cli` repository. In the OpenSoha workspace,
+read `../AGENTS.md` once; do not assume it is loaded across the Git root.
+For a standalone clone, these local rules are sufficient to begin work.
+Before changing CLI behavior, use [.agents/skills/soha-cli/SKILL.md](.agents/skills/soha-cli/SKILL.md).
+Read README for unfamiliar command behavior and the relevant workflow under
+`.github/workflows/` for build, dependency, or release work.
 
 The executable sources of truth are:
 
@@ -77,6 +79,9 @@ the workflow or documentation is stale, then update both in the same change.
 | Dockerfile, module, CI, or release workflow | the complete CI gate plus a real Docker or corresponding successful Actions job |
 
 ## Complete CI Gate
+
+Use the change-to-validation matrix during iteration. This full gate applies
+to the changes that require it and to CI/release verification, not every edit.
 
 Use Go `1.26.6`, Node.js `20.x`, `govulncheck v1.3.0`, and
 `golangci-lint v2.9.0`. Run release-sensitive checks with the parent workspace

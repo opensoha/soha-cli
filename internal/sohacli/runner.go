@@ -256,6 +256,12 @@ func runLogin(ctx context.Context, args []string, rt Runtime) error {
 func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
 	fs := newRuntimeFlagSet("capabilities", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
+	query := fs.String("query", "", "match capability names, descriptions and effects")
+	toolDomain := fs.String("tool-domain", "", "owning domain such as docker or delivery")
+	action := fs.String("action", "", "capability action")
+	resourceKind := fs.String("resource-kind", "", "required input resource kind")
+	limit := fs.Int("limit", 0, "gateway page size, from 1 to 100; 0 preserves the legacy full catalog")
+	cursor := fs.String("cursor", "", "opaque gateway catalog cursor")
 	domain := fs.String("domain", "gateway", "capability domain: gateway or platform")
 	format := fs.String("output", "json", "output format: json, yaml, names, or inputs")
 	jsonOutput := fs.Bool("json", false, "print JSON output")
@@ -282,6 +288,9 @@ func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
 		return err
 	}
 	if domainValue == "platform" {
+		if *query != "" || *toolDomain != "" || *action != "" || *resourceKind != "" || *cursor != "" || *limit != 0 {
+			return fmt.Errorf("capability search filters require --domain gateway")
+		}
 		return runPlatformCapabilities(
 			ctx,
 			rt,
@@ -291,7 +300,19 @@ func runCapabilities(ctx context.Context, args []string, rt Runtime) error {
 			gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source),
 		)
 	}
-	manifest, err := gatewayClient(rt, profile).Capabilities(ctx, gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source))
+	if *limit < 0 || *limit > 100 {
+		return fmt.Errorf("--limit must be between 0 and 100")
+	}
+	filters := url.Values{}
+	for key, value := range map[string]string{"query": *query, "toolDomain": *toolDomain, "action": *action, "resourceKind": *resourceKind, "cursor": *cursor} {
+		if value != "" {
+			filters.Set(key, value)
+		}
+	}
+	if *limit > 0 {
+		filters.Set("limit", strconv.Itoa(*limit))
+	}
+	manifest, err := gatewayClient(rt, profile).SearchCapabilities(ctx, gatewayHeaders(profile, *aiClientID, *aiClientName, *skillID, *source), filters)
 	if err != nil {
 		return err
 	}
@@ -390,6 +411,7 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 	source := fs.String("source", "", "override source label")
 	yes := fs.Bool("yes", false, "skip confirmation for protected tools")
 	preview := fs.Bool("preview", false, "print a redacted request preview without invoking the tool")
+	version := fs.String("capability-version", "", "require a previously discovered capability version")
 	secretRefFlags := repeatableFlag{}
 	fs.Var(&secretRefFlags, "secret-ref", "secret reference as ALIAS=soha://secrets/ID[/versions/N], repeatable")
 	if err := fs.Parse(args); err != nil {
@@ -424,12 +446,18 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 	if !ok {
 		return fmt.Errorf("tool %q is not available in the Gateway manifest", toolName)
 	}
+	if *version != "" && *version != tool.Version {
+		return fmt.Errorf("capability version changed or is unavailable for %q; rediscover before executing", toolName)
+	}
 	requestPreview := map[string]any{
 		"tool": toolName, "riskLevel": tool.RiskLevel,
 		"requiresApproval": tool.RequiresApproval, "input": sanitizeCLIValue(input),
 	}
 	if len(secretRefs) > 0 {
 		requestPreview["secretRefs"] = secretRefs
+	}
+	if tool.Version != "" {
+		requestPreview["capabilityVersion"] = tool.Version
 	}
 	if *preview {
 		return writePrettyJSON(rt.Out, requestPreview)
@@ -443,7 +471,7 @@ func runToolCall(ctx context.Context, args []string, rt Runtime) error {
 			return fmt.Errorf("tool invocation declined; pass --yes for non-interactive use")
 		}
 	}
-	result, err := client.InvokeToolWithRequest(ctx, toolName, input, "", secretRefs, headers)
+	result, err := client.InvokeCapability(ctx, tool, input, "", secretRefs, headers)
 	if err != nil {
 		return err
 	}
@@ -1056,15 +1084,17 @@ func sanitizeCLIValue(value any) any {
 	case CreatedServiceAccountToken:
 		return map[string]any{"token": sanitizeCLIValue(typed.Token), "value": typed.Value}
 	case ToolInvocationResult:
-		return ToolInvocationResult{
-			ToolName:         typed.ToolName,
-			RiskLevel:        typed.RiskLevel,
-			RequiresApproval: typed.RequiresApproval,
-			Result:           typed.Result,
-			Output:           sanitizeCLIValue(typed.Output),
-			RelatedIDs:       sanitizeCLIMap(typed.RelatedIDs),
-			Audit:            sanitizeCLIMap(typed.Audit),
+		typed.Output = sanitizeCLIValue(typed.Output)
+		typed.RelatedIDs = sanitizeCLIMap(typed.RelatedIDs)
+		typed.Audit = sanitizeCLIMap(typed.Audit)
+		typed.AdditionalProperties = sanitizeCLIMap(typed.AdditionalProperties)
+		if typed.Task != nil {
+			task := *typed.Task
+			task.Status = redactSensitiveText(task.Status)
+			task.StatusCall.Input = sanitizeCLIMap(task.StatusCall.Input)
+			typed.Task = &task
 		}
+		return typed
 	case ResourceReadResult:
 		typed.Text = redactSensitiveText(typed.Text)
 		typed.Data = sanitizeCLIValue(typed.Data)
