@@ -2,10 +2,11 @@
 
 ## Scope
 
-These rules apply to the entire `soha-cli` repository. In the OpenSoha workspace,
+These rules apply to the entire `soha-cli` repository. In a confirmed OpenSoha workspace,
 read `../AGENTS.md` once; do not assume it is loaded across the Git root.
 For a standalone clone, these local rules are sufficient to begin work.
-Before changing CLI behavior, use [.agents/skills/soha-cli/SKILL.md](.agents/skills/soha-cli/SKILL.md).
+Before implementation or substantive review, read [.agents/skills/soha-cli/SKILL.md](.agents/skills/soha-cli/SKILL.md)
+and its references relevant to the task. Skill symlinks provide discovery, not proof of loading.
 Read README for unfamiliar command behavior and the relevant workflow under
 `.github/workflows/` for build, dependency, or release work.
 
@@ -20,6 +21,27 @@ The executable sources of truth are:
 
 When these rules disagree with an executable workflow, first determine whether
 the workflow or documentation is stale, then update both in the same change.
+
+## Task Contract And Evidence
+
+- Identify the command, owning client/runtime, affected consumers and behavior to preserve
+  before editing. Include stdout/stderr, exit status, non-interactive behavior and public
+  request/response semantics where relevant; a small textual change is not permission to
+  change global defaults or the command engine.
+- Reuse unchanged guidance within a task; after a handoff or changed source, reload only the
+  missing relevant constraints. Read-only questions need only the evidence they use.
+- Existing code establishes current behavior, not automatic compliance with the target
+  contract. Resolve substantive conflicts using source and tests, record the decision, and
+  do not weaken assertions or compatibility baselines to obtain a pass.
+- Separate local fixtures, actual Core integration, packaged launcher execution and release
+  acceptance. Record exact CLI/Core/Contracts revisions or artifact versions; branch names
+  and a successful build alone do not establish a tested combination.
+- Report passed, failed, skipped and not-run checks distinctly. Reuse a successful result only
+  while the relevant source, dependencies and environment remain unchanged.
+- Collaboration-document-only changes require content, reference and diff checks, not a
+  runtime build or release. Existing security and release gates below remain mandatory for
+  changes to which they apply. Skills and historical plans do not authorize installation,
+  remote writes, publishing or merging a pull request.
 
 ## Ownership And Boundaries
 
