@@ -13,7 +13,7 @@ types and local HTTP calls. It should remain testable without a real server.
 
 ## Workflow
 
-1. Use `internal/sohacli/command_metadata.go` for command-surface changes. Read CI workflows for build or release changes; command help, docs, completion, and dispatch flow from metadata.
+1. Read `AGENTS.md` before implementation or substantive review. Use `internal/sohacli/command_metadata.go` for command-surface changes. Read CI workflows for build or release changes; command help, docs, completion, and dispatch flow from metadata.
 2. Inspect the working tree and preserve unrelated edits. Add behavior in the smallest existing owner: profiles/context, MCP, skills, plugins, governance, AI platform/knowledge/evaluation, cloud diagnostics, tokens, service accounts, or Gateway calls.
 3. Keep the `Run(ctx, args, Runtime)` boundary. Use `Runtime.In`, `Runtime.Out`, `Runtime.Err`, `Runtime.ConfigPath`, and injectable HTTP clients in tests; do not write directly to `os.Stdout` or `os.Stderr` outside `cmd/soha/main.go`.
 4. Use stdlib `flag` plus `newRuntimeFlagSet`. Return errors from handlers and let `Run` map them to exit codes.
@@ -22,6 +22,27 @@ types and local HTTP calls. It should remain testable without a real server.
 7. For command-surface changes, update metadata, dispatch, completion words where relevant, tests, and regenerate `docs/commands.md` with `go run ./cmd/soha docs --format markdown > docs/commands.md`.
 8. Keep `soha mcp` as the canonical direct stdio entry. Official SaaS is the endpoint default; self-hosted client configurations must carry an explicit `--base-url`. Keep `soha mcp start` compatible.
 9. Source the agent-facing `$soha` skill from the verified `soha-skills/agent-skills/soha` release asset. Do not embed or generate a second copy in the CLI. Resolve normal installs and updates to the latest stable release; reserve explicit source pins for rollback and reproducibility rather than adding a routine `--skills-version` flow.
+
+## Change Contract And Evidence
+
+- Before editing, identify the command/client owner, callers, intended behavior,
+  preserved flags/output/exit-code semantics and the applicable test entry.
+  Read only relevant references; reuse unchanged context, and reload necessary
+  rules after task switches or loss of critical context.
+- Existing commands demonstrate current behavior, not automatic compliance with
+  the effective public contract. Explain conflicts rather than copying legacy
+  behavior or relaxing a baseline to make tests pass.
+- A local command fix must not silently change shared HTTP defaults, profile
+  handling or MCP transport. Shared changes require checks of their consumers;
+  do not create a second client or duplicate Core business logic.
+- Record CLI/Core/contracts and installed skill versions or resolved SHAs for
+  integration evidence. Keep unit/httptest, real-server smoke, packaged-launcher
+  and release-download evidence separate.
+- Report pass, fail, skip and not-run explicitly. A successful build, mocked
+  response or upload is not proof of authenticated runtime or anonymous release
+  behavior. Existing release/security gates remain mandatory when applicable.
+- Plans and skills describe work; they do not authorize production operations,
+  installation, publishing or additional cross-repository changes.
 
 ## Security Rules
 
