@@ -61,8 +61,16 @@ func (c APIClient) GetComputeProviderInstance(ctx context.Context, domain sohaap
 	return out.Data, nil
 }
 
-func (c APIClient) CheckComputeProviderInstanceHealth(ctx context.Context, domain sohaapi.ComputeProviderDomain, providerKey, instanceRef, idempotencyKey string, input sohaapi.ComputeProviderReadRequest) (ComputeTaskView, error) {
-	return c.mutateComputeProviderInstance(ctx, domain, providerKey, instanceRef, "health-checks", idempotencyKey, input)
+func (c APIClient) CheckComputeProviderInstanceHealth(ctx context.Context, domain sohaapi.ComputeProviderDomain, providerKey, instanceRef, idempotencyKey string, input sohaapi.ComputeProviderReadRequest) (sohaapi.ConnectionCheckResult, error) {
+	var out sohaapi.ConnectionCheckResultEnvelope
+	path := computeProviderInstancePath(domain, providerKey, instanceRef) + "/health-checks"
+	if err := c.doJSON(ctx, http.MethodPost, path, c.Token, idempotencyHeaders(idempotencyKey), input, &out); err != nil {
+		return sohaapi.ConnectionCheckResult{}, err
+	}
+	if out.Data.CheckedAt.IsZero() || strings.TrimSpace(out.Data.Status) == "" {
+		return sohaapi.ConnectionCheckResult{}, fmt.Errorf("connection checks require a server upgrade to return synchronous results")
+	}
+	return out.Data, nil
 }
 
 func (c APIClient) DiscoverComputeProviderInstance(ctx context.Context, domain sohaapi.ComputeProviderDomain, providerKey, instanceRef, idempotencyKey string, input sohaapi.ComputeProviderDiscoverRequest) (ComputeTaskView, error) {

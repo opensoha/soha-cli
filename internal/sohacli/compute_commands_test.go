@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func TestComputeCommandsCoverReadAndMutationSurfaces(t *testing.T) {
 			if key := r.Header.Get("Idempotency-Key"); key != "health-key-1" {
 				t.Fatalf("health key = %q", key)
 			}
-			_, _ = w.Write(computeTaskResponse(t, "health-1"))
+			_, _ = w.Write([]byte(`{"data":{"healthy":false,"status":"unavailable","message":"connection refused","checkedAt":"2026-09-22T00:00:00Z"}}`))
 		case 3:
 			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/compute/resources/virtualization/vm/vm-1/relations" {
 				t.Fatalf("relations request = %s %s", r.Method, r.URL.Path)
@@ -65,9 +66,34 @@ func TestComputeCommandsCoverReadAndMutationSurfaces(t *testing.T) {
 		if code := Run(context.Background(), command, Runtime{Out: &stdout, Err: &stderr, ConfigPath: configPath}); code != 0 {
 			t.Fatalf("Run(%v) code=%d stderr=%s", command, code, stderr.String())
 		}
+		if len(command) > 2 && command[2] == "health" {
+			var result map[string]any
+			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result["healthy"] != false || result["message"] != "connection refused" || result["id"] != nil {
+				t.Fatalf("health result = %v", result)
+			}
+		}
 		if stdout.Len() == 0 {
 			t.Fatalf("Run(%v) produced no output", command)
 		}
+	}
+}
+
+func TestComputeHealthRejectsLegacyTaskResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write(computeTaskResponse(t, "legacy-task"))
+	}))
+	defer server.Close()
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"compute", "provider-instances", "health", "virtualization", "pve", "connection-1", "--generation", "1", "--profile", "dev"}, Runtime{
+		Out: &stdout, Err: &stderr, ConfigPath: writeTestConfig(t, server.URL),
+	})
+	if code == 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "server upgrade") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }
 
