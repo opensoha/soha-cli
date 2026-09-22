@@ -25,7 +25,7 @@ version, and rechecks the cached binary before execution.
 Install a tagged module with Go:
 
 ```sh
-go install github.com/opensoha/soha-cli/cmd/soha@v0.1.6
+go install github.com/opensoha/soha-cli/cmd/soha@v0.1.8
 soha version
 ```
 
@@ -35,7 +35,7 @@ release, then verify it against `checksums.txt` before placing `soha` on your
 
 ```sh
 sha256sum -c checksums.txt --ignore-missing
-tar -xzf soha_0.1.6_linux_amd64.tar.gz
+tar -xzf soha_0.1.8_linux_amd64.tar.gz
 install -m 0755 soha /usr/local/bin/soha
 ```
 
