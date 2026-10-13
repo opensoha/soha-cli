@@ -1013,25 +1013,34 @@ func readToolInput(rt Runtime, path, inline string) (map[string]any, error) {
 }
 
 func readJSONInput(rt Runtime, path, inline string) (map[string]any, error) {
-	switch {
-	case strings.TrimSpace(inline) != "":
+	const maximum = 10 << 20
+	if strings.TrimSpace(inline) != "" {
+		if len(inline) > maximum {
+			return nil, fmt.Errorf("JSON input exceeds 10 MiB")
+		}
 		return parseJSONObject([]byte(inline))
-	case strings.TrimSpace(path) == "":
-		return map[string]any{}, nil
-	case strings.TrimSpace(path) == "-":
-		raw, err := io.ReadAll(io.LimitReader(rt.In, 10<<20))
-		if err != nil {
-			return nil, err
-		}
-		return parseJSONObject(raw)
-	default:
-		// #nosec G304 -- path is explicitly supplied through the command input-file option.
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		return parseJSONObject(raw)
 	}
+	if strings.TrimSpace(path) == "" {
+		return map[string]any{}, nil
+	}
+	reader := rt.In
+	if strings.TrimSpace(path) != "-" {
+		// #nosec G304 -- the caller explicitly supplies the input file.
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = file.Close() }()
+		reader = file
+	}
+	raw, err := io.ReadAll(io.LimitReader(reader, maximum+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maximum {
+		return nil, fmt.Errorf("JSON input exceeds 10 MiB")
+	}
+	return parseJSONObject(raw)
 }
 
 func parseJSONObject(raw []byte) (map[string]any, error) {

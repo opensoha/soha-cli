@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${GITHUB_ACTIONS:-}" != true && -z "${OPENSOHA_VERIFY_ACTIVE:-}" ]] &&
+  { command -v opensoha-verify >/dev/null 2>&1 || [[ -n "${OPENSOHA_LOCAL_VERIFY_REQUIRED:-}" ]]; }; then
+  exec opensoha-verify run -- bash "$0" "$@"
+fi
+
 archive="${1:-}"
 if [[ -z "${archive}" ]]; then
   echo "usage: $0 <release-archive.tar.gz|release-archive.zip>" >&2

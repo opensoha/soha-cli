@@ -12,7 +12,7 @@ import (
 
 func runCompute(ctx context.Context, args []string, rt Runtime) error {
 	if len(args) == 0 {
-		return fmt.Errorf("compute requires capabilities, overview, access-sources, providers, provider-instances, resources, or tasks")
+		return fmt.Errorf("compute requires capabilities, overview, access-sources, providers, provider-instances, resources, tasks, capacity, or vms")
 	}
 	switch args[0] {
 	case "capabilities", "overview":
@@ -27,6 +27,8 @@ func runCompute(ctx context.Context, args []string, rt Runtime) error {
 		return runComputeResources(ctx, args[1:], rt)
 	case "tasks":
 		return runComputeTasks(ctx, args[1:], rt)
+	case "capacity", "vms":
+		return runVMCompute(ctx, args[0], args[1:], rt)
 	default:
 		return fmt.Errorf("unknown compute command %q", args[0])
 	}

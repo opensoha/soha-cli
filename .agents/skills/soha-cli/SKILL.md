@@ -81,7 +81,7 @@ types and local HTTP calls. It should remain testable without a real server.
 
 ## CI Gate
 
-Use Go `1.26.6` and run the release-sensitive gate with the root workspace disabled:
+Use Go `1.27.2` and run the release-sensitive gate with the root workspace disabled:
 
 ```bash
 GOWORK=off go mod tidy
@@ -90,7 +90,7 @@ GOWORK=off go mod verify
 GOWORK=off go test ./...
 GOWORK=off go test -race ./...
 GOWORK=off go vet ./...
-GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
+GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 golangci-lint run --timeout=5m
 GOWORK=off CGO_ENABLED=0 go build -o /tmp/soha-cli ./cmd/soha
 (cd npm/cli && npm test && npm pack --dry-run)
@@ -98,4 +98,4 @@ docker build -f Dockerfile -t ghcr.io/opensoha/soha-cli:test .
 git diff --check
 ```
 
-Use `golangci-lint v2.9.0`; the workflow action is the executable source of truth for that version. `git diff --check` is an additional mandatory local pre-submit check rather than a current `ci.yml` step. Dockerfile, npm launcher, workflow, or release changes require their corresponding checks. A missing local Docker daemon is not a pass and must be covered by a successful GitHub Actions Docker job.
+Use `golangci-lint v2.14.0`; the workflow action is the executable source of truth for that version. `git diff --check` is an additional mandatory local pre-submit check rather than a current `ci.yml` step. Dockerfile, npm launcher, workflow, or release changes require their corresponding checks. A missing local Docker daemon is not a pass and must be covered by a successful GitHub Actions Docker job.

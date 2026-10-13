@@ -733,10 +733,12 @@ func upsertCodexMCPConfig(path, section, block string) (string, bool, error) {
 	backupPath := ""
 	if statErr == nil {
 		backupPath = fmt.Sprintf("%s.bak.%s", path, time.Now().Format("20060102150405"))
+		// #nosec G703 -- backup is beside the explicit local client configuration selected by the user, not a remotely supplied path.
 		if err := os.WriteFile(backupPath, raw, mode); err != nil {
 			return "", false, err
 		}
 	}
+	// #nosec G703 -- path is the explicit local client configuration selected by the user, matching the authorized read above.
 	if err := os.WriteFile(path, []byte(next), mode); err != nil {
 		return "", false, err
 	}

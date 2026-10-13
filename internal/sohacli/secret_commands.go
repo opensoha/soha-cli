@@ -2,7 +2,10 @@ package sohacli
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,7 +20,7 @@ var (
 
 func runSecret(ctx context.Context, args []string, rt Runtime) error {
 	if len(args) == 0 {
-		return fmt.Errorf("secret requires a subcommand: list, get, create, update, disable, versions, rotate, or revoke-version")
+		return fmt.Errorf("secret requires a subcommand: list, get, create, update, disable, versions, references, generate-ssh-key, rotate, or revoke-version")
 	}
 	switch args[0] {
 	case "list":
@@ -26,12 +29,16 @@ func runSecret(ctx context.Context, args []string, rt Runtime) error {
 		return runSecretGet(ctx, args[1:], rt)
 	case "create":
 		return runSecretCreate(ctx, args[1:], rt)
+	case "generate-ssh-key":
+		return runSecretCreateAction(ctx, args[1:], rt, true)
 	case "update":
 		return runSecretUpdate(ctx, args[1:], rt)
 	case "disable":
 		return runSecretDisable(ctx, args[1:], rt)
 	case "versions":
 		return runSecretVersions(ctx, args[1:], rt)
+	case "references":
+		return runSecretReferences(ctx, args[1:], rt)
 	case "rotate":
 		return runSecretRotate(ctx, args[1:], rt)
 	case "revoke-version":
@@ -95,6 +102,10 @@ func runSecretGet(ctx context.Context, args []string, rt Runtime) error {
 }
 
 func runSecretCreate(ctx context.Context, args []string, rt Runtime) error {
+	return runSecretCreateAction(ctx, args, rt, false)
+}
+
+func runSecretCreateAction(ctx context.Context, args []string, rt Runtime, generate bool) error {
 	fs := newRuntimeFlagSet("secret create", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
 	name := fs.String("name", "", "secret name")
@@ -105,10 +116,33 @@ func runSecretCreate(ctx context.Context, args []string, rt Runtime) error {
 	vaultPath := fs.String("vault-path", "", "Vault KV v2 secret path")
 	vaultKey := fs.String("vault-key", "", "Vault KV v2 data key")
 	vaultVersion := fs.Int("vault-version", 0, "pinned Vault KV v2 version")
+	kind := fs.String("kind", "opaque", "secret kind: opaque, ssh_keypair, ssh_public_key, ssh_password")
+	input := fs.String("input", "", "write-only typed JSON request file or - for stdin")
 	bindings := repeatableFlag{}
-	fs.Var(&bindings, "binding", "binding as capability|project|connection=target, repeatable")
+	fs.Var(&bindings, "binding", "binding as type=target or vm:vm_auth|vm_exec=ID or vm_create:vm_cloud_init=ID")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *input != "" {
+		if err := exclusiveSecretJSONFlags(fs); err != nil {
+			return err
+		}
+		if generate {
+			return fmt.Errorf("generate-ssh-key uses metadata flags only")
+		}
+		var request SecretCreateRequest
+		if err := readTypedSecretInput(rt, *input, &request); err != nil {
+			return err
+		}
+		client, err := loadSecretClient(ctx, rt, *profileFlag)
+		if err != nil {
+			return err
+		}
+		item, err := client.CreateSecret(ctx, request)
+		if err != nil {
+			return err
+		}
+		return writePrettyJSON(rt.Out, sanitizeCLIValue(item))
 	}
 	if strings.TrimSpace(*name) == "" {
 		return fmt.Errorf("--name is required")
@@ -123,6 +157,27 @@ func runSecretCreate(ctx context.Context, args []string, rt Runtime) error {
 	if err != nil {
 		return err
 	}
+	if generate {
+		if *vaultMount != "" || *vaultPath != "" || *vaultKey != "" || *vaultVersion != 0 || *kind != "opaque" {
+			return fmt.Errorf("generated SSH keys use the encrypted local store")
+		}
+		client, err := loadSecretClient(ctx, rt, *profileFlag)
+		if err != nil {
+			return err
+		}
+		var item sohaapi.SecretMetadataEnvelope
+		err = client.doJSON(ctx, "POST", "/api/v1/secrets/generate-ssh-key", client.Token, nil, sohaapi.SecretGenerateSSHKeyRequest{Name: strings.TrimSpace(*name), Description: *description, ScopeType: sohaapi.SecretScopeType(*scopeType), ScopeID: *scopeID, Bindings: parsedBindings}, &item)
+		if err != nil {
+			return err
+		}
+		return writePrettyJSON(rt.Out, sanitizeCLIValue(item.Data))
+	}
+	if !sohaapi.SecretKind(*kind).Valid() {
+		return fmt.Errorf("invalid --kind")
+	}
+	if (*kind == "ssh_keypair" || *kind == "ssh_public_key") && *vaultMount == "" {
+		return fmt.Errorf("SSH key import requires --input file|- with a typed JSON request")
+	}
 	value, vaultKV2, err := readSecretInput(rt, *vaultMount, *vaultPath, *vaultKey, *vaultVersion)
 	if err != nil {
 		return err
@@ -132,6 +187,7 @@ func runSecretCreate(ctx context.Context, args []string, rt Runtime) error {
 		return err
 	}
 	item, err := client.CreateSecret(ctx, SecretCreateRequest{
+		Kind: sohaapi.SecretKind(*kind),
 		Name: strings.TrimSpace(*name), Description: strings.TrimSpace(*description), Value: value, VaultKv2: vaultKV2,
 		ScopeType: sohaapi.SecretScopeType(strings.TrimSpace(*scopeType)), ScopeID: strings.TrimSpace(*scopeID), Bindings: parsedBindings,
 	})
@@ -226,6 +282,33 @@ func runSecretVersions(ctx context.Context, args []string, rt Runtime) error {
 	return writeStructuredOutput(rt.Out, format, sanitizeCLIValue(items))
 }
 
+func runSecretReferences(ctx context.Context, args []string, rt Runtime) error {
+	fs := newRuntimeFlagSet("secret references", args, rt)
+	profileFlag := fs.String("profile", "", "profile name")
+	output := fs.String("output", "json", "output format: json or yaml")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	id := strings.TrimSpace(fs.Arg(0))
+	if id == "" {
+		return fmt.Errorf("secret references requires a secret id")
+	}
+	format, err := normalizeOutputFormat(*output, "json", "yaml")
+	if err != nil {
+		return err
+	}
+	client, err := loadSecretClient(ctx, rt, *profileFlag)
+	if err != nil {
+		return err
+	}
+	var items sohaapi.SecretReferenceUsageListEnvelope
+	err = client.doJSON(ctx, "GET", "/api/v1/secrets/"+url.PathEscape(id)+"/references", client.Token, nil, nil, &items)
+	if err != nil {
+		return err
+	}
+	return writeStructuredOutput(rt.Out, format, sanitizeCLIValue(items))
+}
+
 func runSecretRotate(ctx context.Context, args []string, rt Runtime) error {
 	fs := newRuntimeFlagSet("secret rotate", args, rt)
 	profileFlag := fs.String("profile", "", "profile name")
@@ -233,6 +316,7 @@ func runSecretRotate(ctx context.Context, args []string, rt Runtime) error {
 	vaultPath := fs.String("vault-path", "", "Vault KV v2 secret path")
 	vaultKey := fs.String("vault-key", "", "Vault KV v2 data key")
 	vaultVersion := fs.Int("vault-version", 0, "pinned Vault KV v2 version")
+	input := fs.String("input", "", "write-only typed rotation JSON file or - for stdin")
 	id := ""
 	flagArgs := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
@@ -256,15 +340,26 @@ func runSecretRotate(ctx context.Context, args []string, rt Runtime) error {
 	if id == "" {
 		return fmt.Errorf("secret rotate requires a secret id")
 	}
-	value, vaultKV2, err := readSecretInput(rt, *vaultMount, *vaultPath, *vaultKey, *vaultVersion)
-	if err != nil {
-		return err
+	request := SecretRotateRequest{}
+	if *input != "" {
+		if err := exclusiveSecretJSONFlags(fs); err != nil {
+			return err
+		}
+		if err := readTypedSecretInput(rt, *input, &request); err != nil {
+			return err
+		}
+	} else {
+		value, vaultKV2, err := readSecretInput(rt, *vaultMount, *vaultPath, *vaultKey, *vaultVersion)
+		if err != nil {
+			return err
+		}
+		request.Value, request.VaultKv2 = value, vaultKV2
 	}
 	client, err := loadSecretClient(ctx, rt, *profileFlag)
 	if err != nil {
 		return err
 	}
-	version, err := client.RotateSecret(ctx, id, SecretRotateRequest{Value: value, VaultKv2: vaultKV2})
+	version, err := client.RotateSecret(ctx, id, request)
 	if err != nil {
 		return err
 	}
@@ -331,12 +426,50 @@ func parseSecretBindings(values []string) ([]SecretBinding, error) {
 	for _, value := range values {
 		targetType, targetRef, ok := strings.Cut(value, "=")
 		targetType, targetRef = strings.TrimSpace(targetType), strings.TrimSpace(targetRef)
-		if !ok || targetRef == "" || (targetType != "capability" && targetType != "project" && targetType != "connection") {
-			return nil, fmt.Errorf("invalid --binding %q; use capability|project|connection=target", value)
+		targetType, purpose, _ := strings.Cut(targetType, ":")
+		valid := sohaapi.SecretBindingTargetType(targetType).Valid()
+		switch targetType {
+		case "vm":
+			valid = purpose == "vm_auth" || purpose == "vm_exec"
+		case "vm_create":
+			valid = purpose == "vm_cloud_init"
+		default:
+			valid = valid && purpose == ""
 		}
-		bindings = append(bindings, SecretBinding{TargetType: sohaapi.SecretBindingTargetType(targetType), TargetRef: targetRef})
+		if !ok || targetRef == "" || !valid {
+			return nil, fmt.Errorf("invalid --binding; use capability|project|connection=target, vm:vm_auth|vm_exec=ID, or vm_create:vm_cloud_init=ID")
+		}
+		bindings = append(bindings, SecretBinding{TargetType: sohaapi.SecretBindingTargetType(targetType), TargetRef: targetRef, Purpose: sohaapi.SecretPurpose(purpose)})
 	}
 	return bindings, nil
+}
+
+func readTypedSecretInput(rt Runtime, file string, out any) error {
+	value, err := readJSONInput(rt, file, "")
+	if err != nil {
+		return fmt.Errorf("cannot read secret JSON input")
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("invalid secret JSON input")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		// Decoder errors may quote a value or an unknown key containing secret material.
+		return fmt.Errorf("invalid typed secret JSON request")
+	}
+	return nil
+}
+
+func exclusiveSecretJSONFlags(fs *flag.FlagSet) error {
+	var err error
+	fs.Visit(func(value *flag.Flag) {
+		if value.Name != "input" && value.Name != "profile" {
+			err = fmt.Errorf("--input cannot be combined with secret request field flags")
+		}
+	})
+	return err
 }
 
 func parseSecretRefFlags(values []string) (map[string]string, error) {

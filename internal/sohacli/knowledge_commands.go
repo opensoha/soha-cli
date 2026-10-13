@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-var secretReferencePattern = regexp.MustCompile(`^secret:[^\s]{1,240}$`)
+var secretReferencePattern = regexp.MustCompile(`^(?:secret:[^\s]{1,240}|soha://secrets/[A-Za-z0-9._-]+(?:/versions/[1-9][0-9]*)?)$`)
 
 func runKnowledge(ctx context.Context, args []string, rt Runtime) error {
 	if len(args) == 0 {
@@ -74,7 +74,7 @@ func runKnowledgeConnectorsCreate(ctx context.Context, args []string, rt Runtime
 	legacyID := fs.String("id", "", "deprecated alias for connector name")
 	kind := fs.String("kind", "", "connector kind: http, git, or object")
 	version := fs.String("version", "", "connector version")
-	configRef := fs.String("config-ref", "", "opaque secret reference (sent as secretRef)")
+	configRef := fs.String("config-ref", "", "Gateway soha://secrets/<id> reference, optionally /versions/<n>; legacy secret: configuration remains accepted")
 	configJSON := fs.String("config-json", "", "connector configuration JSON object")
 	allowedHosts := fs.String("allowed-hosts", "", "comma-separated allowed hosts")
 	pathPrefixes := fs.String("path-prefixes", "", "comma-separated allowed path prefixes")
@@ -101,8 +101,9 @@ func runKnowledgeConnectorsCreate(ctx context.Context, args []string, rt Runtime
 	if kindValue != "http" && kindValue != "git" && kindValue != "object" {
 		return fmt.Errorf("--kind must be http, git, or object")
 	}
-	if !secretReferencePattern.MatchString(strings.TrimSpace(*configRef)) {
-		return fmt.Errorf("--config-ref must be an opaque secret: reference")
+	ref := strings.TrimSpace(*configRef)
+	if len(ref) > 512 || !secretReferencePattern.MatchString(ref) {
+		return fmt.Errorf("--config-ref must be a canonical Gateway reference or a legacy secret reference")
 	}
 	config := map[string]any{}
 	if strings.TrimSpace(*configJSON) == "" {

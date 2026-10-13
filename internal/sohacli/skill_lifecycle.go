@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -680,8 +681,13 @@ func normalizedSourceURI(source string) string {
 }
 
 func hashDirectory(root string) (string, error) {
+	directory, err := os.OpenRoot(root)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = directory.Close() }()
 	hash := sha256.New()
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(directory.FS(), ".", func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -695,14 +701,9 @@ func hashDirectory(root string) (string, error) {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("unsupported file in skills directory: %s", path)
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		_, _ = io.WriteString(hash, filepath.ToSlash(relative))
+		_, _ = io.WriteString(hash, path)
 		_, _ = hash.Write([]byte{0})
-		// #nosec G304 -- path is supplied by WalkDir under root.
-		file, err := os.Open(path)
+		file, err := directory.Open(path)
 		if err != nil {
 			return err
 		}

@@ -46,7 +46,7 @@ command for installed binaries.
 
 ## Build
 
-Go 1.26.6 or newer is required because the CLI uses the official MCP Go SDK.
+This module requires Go 1.27.2 or newer.
 
 ```sh
 go test ./...

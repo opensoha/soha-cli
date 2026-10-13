@@ -105,8 +105,8 @@ the workflow or documentation is stale, then update both in the same change.
 Use the change-to-validation matrix during iteration. This full gate applies
 to the changes that require it and to CI/release verification, not every edit.
 
-Use Go `1.26.6`, Node.js `20.x`, `govulncheck v1.3.0`, and
-`golangci-lint v2.9.0`. Run release-sensitive checks with the parent workspace
+Use Go `1.27.2`, Node.js `20.x`, `govulncheck v1.8.0`, and
+`golangci-lint v2.14.0`. Run release-sensitive checks with the parent workspace
 disabled:
 
 ```bash
@@ -116,7 +116,7 @@ GOWORK=off go mod verify
 GOWORK=off go test ./...
 GOWORK=off go test -race ./...
 GOWORK=off go vet ./...
-GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
+GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 golangci-lint run --timeout=5m
 GOWORK=off CGO_ENABLED=0 go build -o /tmp/soha ./cmd/soha
 (cd npm/cli && npm test && npm pack --dry-run)
@@ -172,3 +172,9 @@ Before declaring a release complete, require all of the following:
   or coverage output. Regenerate them through their owning command or workflow.
 - Report validation precisely, including checks delegated to GitHub Actions and
   any integration path that was not exercised.
+
+## Graphify
+
+- 跨模块依赖、共享能力影响、模块迁移或跨仓任务，先查询已有图谱并核对源码；在已确认的多仓工作区按 [Graphify 开发手册](../docs/graphify-development/runbook.md)检查新鲜度、查询和刷新。
+- 结构变更稳定后显式刷新受影响仓库及跨仓图；普通小修改、文案和局部样式不自动建图。刷新失败先诊断，不默认使用 `--force`。
+- 独立克隆时使用本仓 `graphify-out/graph.json` 与原生 Graphify 命令；缺少工具或图谱时直接查源码并说明缺口，不要求补齐相邻仓库。
